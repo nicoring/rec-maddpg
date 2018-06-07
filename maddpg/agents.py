@@ -56,9 +56,12 @@ class MaddpgAgent:
         actions[self.index] = pred_actions
         pred_q = self.critic(batch.observations, actions)
         # backward pass        
-        loss = -pred_q.mean()
+        logits = self.actor(batch.observations[self.index])
+        actor_reg = torch.mean(logits**2)
+        loss = -pred_q.mean() + 1e-3 * actor_reg
         self.actor_optim.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
         self.actor_optim.step()
         return loss
 
@@ -85,6 +88,7 @@ class MaddpgAgent:
 
         self.critic_optim.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
         self.critic_optim.step()
         return loss
 
