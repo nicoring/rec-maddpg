@@ -1,6 +1,8 @@
 import argparse
 import time
+import os
 
+import numpy as np
 from tensorboardX import SummaryWriter
 from multiagent.environment import MultiAgentEnv
 import multiagent.scenarios as scenarios
@@ -24,7 +26,8 @@ def parse_args():
     parser.add_argument('--memory-size', type=int, default=1_000_000, help='size of replay memory')
     parser.add_argument('--tau', type=float, default=0.01, help='update rate for exponential update of target network params')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor for training of critic')
-    parser.add_argument('--exp-name', default='', help='name of experiment')
+    parser.add_argument('--exp-name', default='test', help='name of experiment')
+    parser.add_argument('--exp-run-num', type=str, default='', help='run number of experiment gets appended to log dir')
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -59,7 +62,8 @@ def create_agents(env, params):
     return agents
 
 def train(args):
-    writer = SummaryWriter(comment=args.exp_name)
+    run_name = str(np.datetime64('now')) if args.exp_run_num == '' else args.exp_run_num
+    writer = SummaryWriter(log_dir=os.path.join('runs', args.exp_name, run_name))
     env = make_env(args.scenario, args.benchmark)
     agents = create_agents(env, args)
 
@@ -93,7 +97,7 @@ def train(args):
                 agents_cum_reward[i] += r
 
             # rendering environment
-            if args.render:
+            if args.render and (len(episode_returns) % 1000 == 0):
                 time.sleep(0.1)
                 env.render()
 
@@ -103,7 +107,8 @@ def train(args):
                     actor_loss, critic_loss = agent.update(agents)
                     writer.add_scalar('actor_loss', actor_loss, train_step)
                     writer.add_scalar('critic_loss', critic_loss, train_step)
-        print('episode {} finished with a return of {:.2f}'.format(len(episode_returns), cum_reward))
+        if len(episode_returns) % 1000 == 0:
+            print('episode {} finished with a return of {:.2f}'.format(len(episode_returns), cum_reward))
 
         # store and log rewards
         episode_returns.append(cum_reward)

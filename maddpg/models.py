@@ -27,7 +27,7 @@ class Actor(nn.Module, Clonable):
         return x
 
     def act_det(self, x):
-        return F.softmax(self.forward(x))
+        return F.softmax(self.forward(x), dim=-1)
 
     def act_rand(self, x):
         logits = self.forward(x)
