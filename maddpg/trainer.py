@@ -1,6 +1,7 @@
 import argparse
 import time
 
+from tensorboardX import SummaryWriter
 from multiagent.environment import MultiAgentEnv
 import multiagent.scenarios as scenarios
 
@@ -23,6 +24,7 @@ def parse_args():
     parser.add_argument('--memory-size', type=int, default=1_000_000, help='size of replay memory')
     parser.add_argument('--tau', type=float, default=0.01, help='update rate for exponential update of target network params')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor for training of critic')
+    parser.add_argument('--exp-name', default='', help='name of experiment')
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -57,6 +59,7 @@ def create_agents(env, params):
     return agents
 
 def train(args):
+    writer = SummaryWriter(comment=args.exp_name)
     env = make_env(args.scenario, args.benchmark)
     agents = create_agents(env, args)
 
@@ -74,6 +77,7 @@ def train(args):
         while not (done or terminal):
             # global step count
             train_step += 1
+            # epsiode step count
             episode_step += 1
 
             actions = [agent.act(obs) for obs, agent in zip(obs, agents)]
@@ -96,11 +100,17 @@ def train(args):
             # train agents
             if train_step % args.train_every == 0:
                 for agent in agents:
-                    loss = agent.update(agents)
-                    # TODO: log loss
+                    actor_loss, critic_loss = agent.update(agents)
+                    writer.add_scalar('actor_loss', actor_loss, train_step)
+                    writer.add_scalar('critic_loss', critic_loss, train_step)
         print('episode {} finished with a return of {:.2f}'.format(len(episode_returns), cum_reward))
+
+        # store and log rewards
         episode_returns.append(cum_reward)
         agent_returns.append(agents_cum_reward)
+        agent_rewards_dict = {a.name: r for a, r in zip(agents, agents_cum_reward)}
+        writer.add_scalar('reward', cum_reward, train_step)
+        writer.add_scalars('agent_rewards', agent_rewards_dict, train_step)
 
     print('Finished training with %d episodes' % len(episode_returns))
 
