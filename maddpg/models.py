@@ -24,15 +24,24 @@ class Actor(nn.Module, Clonable):
         x = F.relu(self.lin_1(x))
         x = F.relu(self.lin_2(x))
         x = self.lin_3(x)
-        return x
+        return F.softmax(x, dim=-1)
+        # return F.tanh(x)
 
+    #def act_det(self, x):
+    #     return F.softmax(self.forward(x), dim=-1)
+
+    # def act_rand(self, x):
+    #     logits = self.forward(x)
+    #     u = torch.rand_like(logits)
+    #     return F.softmax(logits - torch.log(-torch.log(u)), dim=-1).detach()
+    
     def act_det(self, x):
-        return F.softmax(self.forward(x), dim=-1)
+        return self.forward(x)
 
     def act_rand(self, x):
-        logits = self.forward(x)
-        u = torch.rand_like(logits)
-        return F.softmax(logits - torch.log(-torch.log(u)), dim=-1).detach()
+        actions = self.forward(x).detach()
+        noise = 0.2 * torch.randn_like(actions)
+        return actions + noise
 
 
 class Critic(nn.Module, Clonable):
@@ -43,7 +52,7 @@ class Critic(nn.Module, Clonable):
         self.lin_3 = nn.Linear(n_hidden, 1)
     
     def forward(self, observations, actions):
-        x = torch.cat([*observations, *actions], dim=1)
+        x = torch.cat([*observations, *actions], dim=-1)
         x = F.relu(self.lin_1(x))
         x = F.relu(self.lin_2(x))
         return self.lin_3(x)

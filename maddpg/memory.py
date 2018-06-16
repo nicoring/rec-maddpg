@@ -20,7 +20,7 @@ class ReplayBuffer:
     @staticmethod
     def sample_from_memories(memories, batch_size):
         """Collect experiences from all agents"""
-        assert(len(set(len(m) for m in memories)) == 1)
+        assert len(set(len(m) for m in memories)) == 1
         max_index = len(memories[0])
         index = np.random.randint(max_index, size=batch_size)
         batches = [m.sample_batch(batch_size, index) for m in memories]
