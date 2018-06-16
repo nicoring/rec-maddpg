@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument('--eval-every', type=int, default=100)
     parser.add_argument('--lr-actor', type=float, default=1e-3)
     parser.add_argument('--lr-critic', type=float, default=1e-2)
+    parser.add_argument('--debug', default=False, action='store_true')
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -62,7 +63,8 @@ def create_agents(env, params):
         n_observations = env.observation_space[i].shape[0]
         n_actions = env.action_space[i].n
         actor = Actor(n_observations, n_actions, params.hidden)
-        n_critic_inputs = sum(o.shape[0] for o in env.observation_space) + sum(a.n for a in env.action_space)
+        n_critic_inputs = sum(o.shape[0] for o in env.observation_space) + \
+                          sum(a.n for a in env.action_space)
         critic = Critic(n_critic_inputs, params.hidden)
         agent = MaddpgAgent(i, 'agent_%d' % i, actor, critic, params)
         agents.append(agent)
@@ -104,8 +106,10 @@ def train(args):
             # act with all agents in environment and receive observation and rewards
             actions = [agent.act(o) for o, agent in zip(obs, agents)]
             writer.add_scalar('entropy', policy_entropy(actions), train_step)
-            # values = {agent.name: agent.critic(torch.tensor(obs, dtype=torch.float), actions) for agent in agents}
-            # writer.add_scalars('values', values, train_step)
+            if args.debug:
+                obs_t = torch.tensor(obs, dtype=torch.float)
+                values = {agent.name: agent.critic(obs_t, actions) for agent in agents}
+                writer.add_scalars('values', values, train_step)
             new_obs, rewards, dones, _ = env.step(actions)
             done = all(dones)
             terminal = episode_step >= args.max_episode_len
@@ -130,10 +134,12 @@ def train(args):
                 for _ in range(args.train_steps):
                     for agent in agents:
                         actor_loss, critic_loss = agent.update(agents)
-                        writer.add_scalar('actor_loss', actor_loss, train_step)
-                        writer.add_scalar('critic_loss', critic_loss, train_step)
+                        if args.debug:
+                            writer.add_scalar('actor_loss', actor_loss, train_step)
+                            writer.add_scalar('critic_loss', critic_loss, train_step)
         if len(episode_returns) % args.eval_every == 0:
-            print('step {}: episode {} finished with a return of {:.2f}'.format(train_step, len(episode_returns), cum_reward))
+            msg = 'step {}: episode {} finished with a return of {:.2f}'
+            print(msg.format(train_step, len(episode_returns), cum_reward))
 
         # store and log rewards
         episode_returns.append(cum_reward)

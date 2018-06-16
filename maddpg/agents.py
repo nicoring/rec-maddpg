@@ -1,7 +1,5 @@
 import numpy as np
 import torch
-import torch.nn.functional as F
-
 
 from memory import ReplayBuffer
 
@@ -32,8 +30,8 @@ class MaddpgAgent:
         self.critic = critic
         self.actor_target = actor.clone()
         self.critic_target = critic.clone()
-        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
-        self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=1e-2)
+        self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=params.lr_actor)
+        self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=params.lr_critic)
         self.memory = ReplayBuffer(params.memory_size)
         self.mse = torch.nn.MSELoss()
 
@@ -41,7 +39,7 @@ class MaddpgAgent:
         self.batch_size = params.batch_size
         self.tau = params.tau
         self.gamma = params.gamma
-        self.clip_grads = False
+        self.clip_grads = True
 
     def update_params(self, target, source):
         zipped = zip(target.parameters(), source.parameters())
@@ -51,14 +49,18 @@ class MaddpgAgent:
             target_param.data.copy_(updated_param)
 
     def act(self, obs):
-        return self.actor.act_rand(torch.tensor(obs, dtype=torch.float, requires_grad=False))
+        obs = torch.tensor(obs, dtype=torch.float, requires_grad=False)
+        actions = self.actor(obs).detach()
+        noise = 0.2 * torch.randn_like(actions)
+        actions = actions + noise
+        return actions
 
     def experience(self, obs, action, reward, new_obs, done):
         self.memory.add(obs, action, reward, new_obs, float(done))
 
     def train_actor(self, batch):
         ### forward pass ###
-        pred_actions = self.actor.act_det(batch.observations[self.index])
+        pred_actions = self.actor(batch.observations[self.index])
         actions = list(batch.actions)
         actions[self.index] = pred_actions
         pred_q = self.critic(batch.observations, actions)
@@ -75,7 +77,7 @@ class MaddpgAgent:
         """Train critic with TD-target."""
         ### forward pass ###
         # (a_1', ..., a_n') = (mu'_1(o_1'), ..., mu'_n(o_n'))
-        next_actions = [a.actor_target.act_det(o).detach()
+        next_actions = [a.actor_target(o).detach()
                         for o, a in zip(batch.next_observations, agents)]
 
         reward = batch.rewards[self.index]
