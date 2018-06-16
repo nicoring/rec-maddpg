@@ -1,4 +1,3 @@
-import math
 import copy
 
 import torch
@@ -14,8 +13,10 @@ class Clonable:
 
 
 class Actor(nn.Module, Clonable):
-    def __init__(self, n_inputs, n_outputs, n_hidden):
+    def __init__(self, n_inputs, action_split, n_hidden):
         super().__init__()
+        self.action_split = tuple(action_split)
+        n_outputs = int(sum(action_split))
         self.lin_1 = nn.Linear(n_inputs, n_hidden)
         self.lin_2 = nn.Linear(n_hidden, n_hidden)
         self.lin_3 = nn.Linear(n_hidden, n_outputs)
@@ -24,7 +25,9 @@ class Actor(nn.Module, Clonable):
         x = F.relu(self.lin_1(x))
         x = F.relu(self.lin_2(x))
         x = self.lin_3(x)
-        return F.softmax(x, dim=-1)
+        splits_logits = torch.split(x, self.action_split, dim=-1)
+        splits_actions = [F.softmax(s, dim=-1) for s in splits_logits]
+        return torch.cat(splits_actions, dim=-1)
 
 
 class Critic(nn.Module, Clonable):

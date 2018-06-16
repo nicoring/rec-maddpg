@@ -40,6 +40,7 @@ class MaddpgAgent:
         self.tau = params.tau
         self.gamma = params.gamma
         self.clip_grads = True
+        self.sigma = 0.1
 
     def update_params(self, target, source):
         zipped = zip(target.parameters(), source.parameters())
@@ -51,7 +52,7 @@ class MaddpgAgent:
     def act(self, obs):
         obs = torch.tensor(obs, dtype=torch.float, requires_grad=False)
         actions = self.actor(obs).detach()
-        noise = 0.2 * torch.randn_like(actions)
+        noise = self.sigma * torch.randn_like(actions)
         actions = actions + noise
         return actions
 

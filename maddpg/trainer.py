@@ -7,6 +7,7 @@ from tensorboardX import SummaryWriter
 import torch
 from multiagent.environment import MultiAgentEnv
 import multiagent.scenarios as scenarios
+import gym
 
 from agents import MaddpgAgent, RandomAgent
 from models import Actor, Critic
@@ -59,21 +60,25 @@ def create_agents(env, params):
     agents = []
     n_agents = env.n
 
+    n_critic_inputs = 0
+    action_splits = []
+    for action_space in env.action_space:
+        if isinstance(action_space, gym.spaces.Discrete):
+            action_splits.append([action_space.n])
+        elif isinstance(action_space, gym.spaces.MultiDiscrete):
+            action_splits.append(action_space.nvec)
+
+    n_obs = sum(o.shape[0] for o in env.observation_space)
+    n_actions = sum(sum(a) for a in action_splits)
+    n_critic_inputs += (n_actions + n_obs)
+
     for i in range(n_agents):
         n_observations = env.observation_space[i].shape[0]
-        n_actions = env.action_space[i].n
-        actor = Actor(n_observations, n_actions, params.hidden)
-        n_critic_inputs = sum(o.shape[0] for o in env.observation_space) + \
-                          sum(a.n for a in env.action_space)
+        actor = Actor(n_observations, action_splits[i], params.hidden)
         critic = Critic(n_critic_inputs, params.hidden)
         agent = MaddpgAgent(i, 'agent_%d' % i, actor, critic, params)
         agents.append(agent)
     return agents
-
-
-def policy_entropy(actions):
-    actions = torch.stack(actions)
-    return (-actions * torch.log(actions)).sum(dim=-1).mean()
 
 
 def create_writer(args):
@@ -105,7 +110,6 @@ def train(args):
 
             # act with all agents in environment and receive observation and rewards
             actions = [agent.act(o) for o, agent in zip(obs, agents)]
-            writer.add_scalar('entropy', policy_entropy(actions), train_step)
             if args.debug:
                 obs_t = torch.tensor(obs, dtype=torch.float)
                 values = {agent.name: agent.critic(obs_t, actions) for agent in agents}
