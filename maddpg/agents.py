@@ -114,3 +114,21 @@ class MaddpgAgent:
         self.update_params(self.critic_target, self.critic)
 
         return actor_loss, critic_loss
+
+    def get_state(self):
+        return {
+            'state_dicts': {
+                'actor': self.actor.state_dict(),
+                'actor_target': self.actor_target.state_dict(),
+                'actor_optim': self.actor_optim.state_dict(),
+                'critic': self.critic.state_dict(),
+                'critic_target': self.critic_target.state_dict(),
+                'critic_optim': self.critic_optim.state_dict()
+            },
+            'memory': self.memory
+        }
+
+    def load_state(self, state):
+        for key, value in state['state_dicts'].items():
+            getattr(self, key).load_state_dict(value)
+        self.memory = state['memory']
