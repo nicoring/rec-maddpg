@@ -18,7 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     # Environment
     parser.add_argument('--scenario', type=str, default='simple', help='name of the scenario script')
-    parser.add_argument('--max-train-steps', type=int, default=1_000_000, help='maximum episode length')
+    parser.add_argument('--max-train-steps', type=int, default=500_000, help='maximum episode length')
     parser.add_argument('--max-episode-len', type=int, default=25, help='maximum episode length')
     parser.add_argument('--num-adversaries', type=int, default=0, help='number of adversaries')
     parser.add_argument('--render', default=False, action='store_true', help='display agent policies')
