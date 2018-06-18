@@ -150,7 +150,8 @@ def train(args):
                 obs_t = torch.tensor(obs, dtype=torch.float)
                 values = {agent.name: agent.critic(obs_t, actions) for agent in agents}
                 writer.add_scalars('values', values, train_step)
-            new_obs, rewards, dones, _ = env.step(actions)
+            numpy_actions = [a.numpy() for a in actions]
+            new_obs, rewards, dones, _ = env.step(numpy_actions)
             done = all(dones)
             terminal = episode_step >= args.max_episode_len
 
