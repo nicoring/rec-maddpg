@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument('--max-episode-len', type=int, default=25, help='maximum episode length')
     parser.add_argument('--num-adversaries', type=int, default=0, help='number of adversaries')
     parser.add_argument('--render', default=False, action='store_true', help='display agent policies')
-    parser.add_argument('--render-only', default=False, action='store_true', help='display agent policies')
+    parser.add_argument('--evaluate', default=False, action='store_true', help='run agent policy without noise and training')
     parser.add_argument('--train-every', type=int, default=100, help='simulation steps in between network updates')
     parser.add_argument('--benchmark', default=False, action='store_true', help='')
     parser.add_argument('--hidden', type=int, default=64, help='number of hidden units in actor and critic')
@@ -30,7 +30,8 @@ def parse_args():
     parser.add_argument('--memory-size', type=int, default=1_000_000, help='size of replay memory')
     parser.add_argument('--tau', type=float, default=0.01, help='update rate for exponential update of target network params')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor for training of critic')
-    parser.add_argument('--exp-name', default='test', help='name of experiment')
+    parser.add_argument('--save-dir', type=str, default='results')
+    parser.add_argument('--exp-name', type=str, default='test', help='name of experiment')
     parser.add_argument('--exp-run-num', type=str, default='', help='run number of experiment gets appended to log dir')
     parser.add_argument('--train-steps', type=int, default=1)
     parser.add_argument('--eval-every', type=int, default=100)
@@ -39,6 +40,7 @@ def parse_args():
     parser.add_argument('--lr-critic', type=float, default=1e-2)
     parser.add_argument('--debug', default=False, action='store_true')
     parser.add_argument('--resume', help='dirname of saved state')
+    parser.add_argument('--load-memories', default=False, action='store_true')
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -85,14 +87,26 @@ def create_agents(env, params):
     return agents
 
 
-def save_agent_states(filename, agents):
-    states = [agent.get_state() for agent in agents]
-    torch.save(states, filename)
+def save_agent_states(dirname, agents):
+    states_and_memories = [agent.get_state() for agent in agents]
+    states, memories = zip(*states_and_memories)
+    states_filename = os.path.join(dirname, 'states.pth.tar')
+    memories_filename = os.path.join(dirname, 'memories.pth.tar')
+    torch.save(states, states_filename)
+    torch.save(memories, memories_filename)
 
 
-def load_agent_states(filename, agents):
-    states = torch.load(filename)
-    for agent, state in zip(agents, states):
+def load_agent_states(dirname, agents, load_memories=False):
+    states_filename = os.path.join(dirname, 'states.pth.tar')
+    memories_filename = os.path.join(dirname, 'memories.pth.tar')
+    states = torch.load(states_filename)
+    if load_memories:
+        memories = torch.load(memories_filename)
+    for i, agent in enumerate(agents):
+        state = {}
+        state['state_dicts'] = states[i]
+        if load_memories:
+            state['memory'] = memories[i]
         agent.load_state(state)
 
 
@@ -107,17 +121,14 @@ def train(args):
 
     # load state of agents if state file is given
     if args.resume:
-        filename = os.path.join(args.resume, 'checkpoint.pth.tar')
-        if os.path.isfile(filename):
-            load_agent_states(filename, agents)
-            args.exp_name, args.exp_run_num = os.path.normpath(args.resume).split('/')[1:]
-        else:
-            print("Couldn't find checkpoint at %s" % args.resume)
+        load_agent_states(args.resume, agents)
+        args.exp_name, args.exp_run_num = os.path.normpath(args.resume).split('/')[-2:]
+        args.save_dir = os.path.join(args.resume[:-2])
 
     # logging
     run_name = str(np.datetime64('now')) if args.exp_run_num == '' else args.exp_run_num
-    writer = SummaryWriter(log_dir=os.path.join('runs', args.exp_name, run_name))
-    dirname = os.path.join('results', args.exp_name, run_name)
+    writer = SummaryWriter(log_dir=os.path.join('tensorboard-logs', args.exp_name, run_name))
+    dirname = os.path.join(args.save_dir, args.exp_name, run_name)
     os.makedirs(dirname, exist_ok=True)
     rewards_file = os.path.join(dirname, 'rewards.csv')
     if not os.path.isfile(rewards_file):
@@ -145,7 +156,7 @@ def train(args):
             episode_step += 1
 
             # act with all agents in environment and receive observation and rewards
-            actions = [agent.act(o) for o, agent in zip(obs, agents)]
+            actions = [agent.act(o, explore=not args.evaluate) for o, agent in zip(obs, agents)]
             if args.debug:
                 obs_t = torch.tensor(obs, dtype=torch.float)
                 values = {agent.name: agent.critic(obs_t, actions) for agent in agents}
@@ -161,16 +172,19 @@ def train(args):
                 agents_cum_reward[i] += reward
 
             # rendering environment
-            if args.render and (len(episode_returns) % args.eval_every == 0) or args.render_only:
+            if args.render and (len(episode_returns) % args.eval_every == 0):
                 time.sleep(0.1)
                 env.render()
-                if args.render_only:
-                    continue
 
             # store tuples (observation, action, reward, next observation, is done) for each agent
             for i, agent in enumerate(agents):
                 agent.experience(obs[i], actions[i], rewards[i], new_obs[i], dones[i])
+
+            # store current observation for next step
             obs = new_obs
+
+            if args.evaluate:
+                continue
 
             # train agents
             if train_step % args.train_every == 0:
@@ -185,27 +199,28 @@ def train(args):
             msg = 'step {}: episode {} finished with a return of {:.2f}'
             print(msg.format(train_step, len(episode_returns), cum_reward))
 
-        if args.render_only:
-            continue
-
-        if (args.save_every != -1) and (len(episode_returns) % args.save_every == 0):
-            filename = os.path.join(dirname, 'checkpoint.pth.tar')
-            save_agent_states(filename, agents)
-
         # store and log rewards
         episode_returns.append(cum_reward)
         agent_returns.append(agents_cum_reward)
 
+        if args.evaluate:
+            continue
+
+        # save agent states
+        if (args.save_every != -1) and (len(episode_returns) % args.save_every == 0):
+            save_agent_states(dirname, agents)
+
+        # save cumulatitive reward and agent rewards
         with open(rewards_file, 'a') as f:
             line = ','.join(map(str, [cum_reward] + agents_cum_reward)) + '\n'
             f.write(line)
 
+        # log rewards for tensorboard
         agent_rewards_dict = {a.name: r for a, r in zip(agents, agents_cum_reward)}
         writer.add_scalar('reward', cum_reward, train_step)
         writer.add_scalars('agent_rewards', agent_rewards_dict, train_step)
 
     print('Finished training with %d episodes' % len(episode_returns))
-    # TODO: store returns
 
 if __name__ == '__main__':
     train(parse_args())

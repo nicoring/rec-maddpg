@@ -49,11 +49,12 @@ class MaddpgAgent:
                 source_param.data * self.tau
             target_param.data.copy_(updated_param)
 
-    def act(self, obs):
+    def act(self, obs, explore=True):
         obs = torch.tensor(obs, dtype=torch.float, requires_grad=False)
         actions = self.actor(obs).detach()
-        noise = self.sigma * torch.randn_like(actions)
-        actions = actions + noise
+        if explore:
+            noise = self.sigma * torch.randn_like(actions)
+            actions = actions + noise
         return actions
 
     def experience(self, obs, action, reward, new_obs, done):
@@ -104,7 +105,7 @@ class MaddpgAgent:
         # sample minibatch
         memories = [a.memory for a in agents]
         batch = ReplayBuffer.sample_from_memories(memories, self.batch_size)
-        
+
         # train networks
         actor_loss = self.train_actor(batch)
         critic_loss = self.train_critic(batch, agents)
@@ -117,18 +118,16 @@ class MaddpgAgent:
 
     def get_state(self):
         return {
-            'state_dicts': {
-                'actor': self.actor.state_dict(),
-                'actor_target': self.actor_target.state_dict(),
-                'actor_optim': self.actor_optim.state_dict(),
-                'critic': self.critic.state_dict(),
-                'critic_target': self.critic_target.state_dict(),
-                'critic_optim': self.critic_optim.state_dict()
-            },
-            'memory': self.memory
-        }
+            'actor': self.actor.state_dict(),
+            'actor_target': self.actor_target.state_dict(),
+            'actor_optim': self.actor_optim.state_dict(),
+            'critic': self.critic.state_dict(),
+            'critic_target': self.critic_target.state_dict(),
+            'critic_optim': self.critic_optim.state_dict()
+        }, self.memory.memory
 
     def load_state(self, state):
         for key, value in state['state_dicts'].items():
             getattr(self, key).load_state_dict(value)
-        self.memory = state['memory']
+        if 'memory' in state:
+            self.memory.memory.extend(state['memory'])
