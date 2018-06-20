@@ -2,6 +2,7 @@ import argparse
 import time
 import os
 import signal
+import itertools as it
 
 import numpy as np
 from tensorboardX import SummaryWriter
@@ -30,10 +31,12 @@ def parse_args():
     parser.add_argument('--memory-size', type=int, default=1_000_000, help='size of replay memory')
     parser.add_argument('--tau', type=float, default=0.01, help='update rate for exponential update of target network params')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor for training of critic')
+    parser.add_argument('--sigma', type=float, default=0.1, help='std deviation of Gaussian noise process for exploration')
     parser.add_argument('--save-dir', type=str, default='results')
     parser.add_argument('--exp-name', type=str, default='test', help='name of experiment')
     parser.add_argument('--exp-run-num', type=str, default='', help='run number of experiment gets appended to log dir')
-    parser.add_argument('--train-steps', type=int, default=1)
+    parser.add_argument('--num-runs', type=int)
+    parser.add_argument('--train-steps', type=int, default=1, help='how many train steps of the networks are done')
     parser.add_argument('--eval-every', type=int, default=100)
     parser.add_argument('--save-every', type=int, default=-1)
     parser.add_argument('--lr-actor', type=float, default=1e-3)
@@ -41,6 +44,9 @@ def parse_args():
     parser.add_argument('--debug', default=False, action='store_true')
     parser.add_argument('--resume', help='dirname of saved state')
     parser.add_argument('--load-memories', default=False, action='store_true')
+    parser.add_argument('--local-obs', default=False, action='store_true')
+    parser.add_argument('--local-actions', default=False, action='store_true')
+    parser.add_argument('--conf', type=int)
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -66,7 +72,6 @@ def create_agents(env, params):
     agents = []
     n_agents = env.n
 
-    n_critic_inputs = 0
     action_splits = []
     for action_space in env.action_space:
         if isinstance(action_space, gym.spaces.Discrete):
@@ -74,11 +79,19 @@ def create_agents(env, params):
         elif isinstance(action_space, gym.spaces.MultiDiscrete):
             action_splits.append(action_space.nvec)
 
-    n_obs = sum(o.shape[0] for o in env.observation_space)
-    n_actions = sum(sum(a) for a in action_splits)
-    n_critic_inputs += (n_actions + n_obs)
+    n_obs_each = [o.shape[0] for o in env.observation_space]
+    n_actions_each = [sum(a) for a in action_splits]
 
     for i in range(n_agents):
+        if params.local_obs:
+            n_obs = n_obs_each[i]
+        else:
+            n_obs = sum(n_obs_each)
+        if params.local_actions:
+            n_actions = n_actions_each[i]
+        else:
+            n_actions = sum(n_actions_each)
+        n_critic_inputs = n_obs + n_actions
         n_observations = env.observation_space[i].shape[0]
         actor = Actor(n_observations, action_splits[i], params.hidden)
         critic = Critic(n_critic_inputs, params.hidden)
@@ -222,5 +235,46 @@ def train(args):
 
     print('Finished training with %d episodes' % len(episode_returns))
 
+
+def train_multiple_times(args, num_runs):
+    for i in range(num_runs):
+        args.exp_run_num = str(i)
+        train(args)
+
+
+def run_config(args, num):
+    scenario_names = [
+        'simple',
+        'simple_adversary',
+        'simple_crypto',
+        'simple_push',
+        'simple_reference',
+        'simple_speaker_listener',
+        'simple_spread',
+        'simple_tag',
+        'simple_world_comm'
+    ]
+    local_obs_choices = [True, False]
+    local_actions_choices = [True, False]
+    config = list(it.product(scenario_names, local_obs_choices, local_actions_choices))[num]
+    print('running conf: (scenario: %s, local_obs: %r, local_actions: %r)' % config)
+    scenario_name, local_obs, local_actions = config
+    args.scenario = scenario_name
+    args.local_obs = local_obs
+    args.local_actions = local_actions
+    args.exp_name = '%s_%s_%s' % (scenario_name, str(local_obs), str(local_actions))
+    train_multiple_times(args, args.num_runs)
+
+
+def main():
+    args = parse_args()
+    if args.conf is not None:
+        run_config(args, args.conf)
+    elif args.num_runs is not None:
+        train_multiple_times(args, args.num_runs)
+    else:
+        train(args)
+
+
 if __name__ == '__main__':
-    train(parse_args())
+    main()

@@ -40,7 +40,13 @@ class MaddpgAgent:
         self.tau = params.tau
         self.gamma = params.gamma
         self.clip_grads = True
-        self.sigma = 0.1
+        self.sigma = params.sigma
+
+        # flags
+        # local obs/actions means only the obs/actions of this agent are available
+        # if obs and actions are local this is equivalent to DDPG
+        self.local_obs = params.local_obs
+        self.local_actions = params.local_actions
 
     def update_params(self, target, source):
         zipped = zip(target.parameters(), source.parameters())
@@ -65,7 +71,9 @@ class MaddpgAgent:
         pred_actions = self.actor(batch.observations[self.index])
         actions = list(batch.actions)
         actions[self.index] = pred_actions
-        pred_q = self.critic(batch.observations, actions)
+        q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
+        q_actions = [actions[self.index]] if self.local_actions else actions
+        pred_q = self.critic(q_obs, q_actions)
         ### backward pass ###
         loss = -pred_q.mean()
         self.actor_optim.zero_grad()
@@ -79,12 +87,16 @@ class MaddpgAgent:
         """Train critic with TD-target."""
         ### forward pass ###
         # (a_1', ..., a_n') = (mu'_1(o_1'), ..., mu'_n(o_n'))
-        next_actions = [a.actor_target(o).detach()
-                        for o, a in zip(batch.next_observations, agents)]
-
+        if self.local_actions:
+            obs = batch.next_observations[self.index]
+            q_next_actions = [self.actor_target(obs).detach()]
+        else:
+            q_next_actions = [a.actor_target(o).detach()
+                              for o, a in zip(batch.next_observations, agents)]
+        q_next_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
+        q_next = self.critic_target(q_next_obs, q_next_actions)
         reward = batch.rewards[self.index]
         done = batch.dones[self.index]
-        q_next = self.critic_target(batch.next_observations, next_actions)
 
         # if not done: y = r + gamma * Q(o_1, ..., o_n, a_1', ..., a_n')
         # if done:     y = r
@@ -92,7 +104,9 @@ class MaddpgAgent:
 
         ### backward pass ###
         # loss(params) = mse(y, Q(o_1, ..., o_n, a_1, ..., a_n))
-        loss = self.mse(self.critic(batch.observations, batch.actions), q_target.detach())
+        q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
+        q_actions = [batch.actions[self.index]] if self.local_actions else batch.actions
+        loss = self.mse(self.critic(q_obs, q_actions), q_target.detach())
 
         self.critic_optim.zero_grad()
         loss.backward()
