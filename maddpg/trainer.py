@@ -100,13 +100,14 @@ def create_agents(env, params):
     return agents
 
 
-def save_agent_states(dirname, agents):
+def save_agent_states(dirname, agents, save_memories=False):
     states_and_memories = [agent.get_state() for agent in agents]
     states, memories = zip(*states_and_memories)
     states_filename = os.path.join(dirname, 'states.pth.tar')
     memories_filename = os.path.join(dirname, 'memories.pth.tar')
     torch.save(states, states_filename)
-    torch.save(memories, memories_filename)
+    if save_memories:
+        torch.save(memories, memories_filename)
 
 
 def load_agent_states(dirname, agents, load_memories=False):
