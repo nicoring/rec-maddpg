@@ -93,7 +93,7 @@ class MaddpgAgent:
         else:
             q_next_actions = [a.actor_target(o).detach()
                               for o, a in zip(batch.next_observations, agents)]
-        q_next_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
+        q_next_obs = [batch.next_observations[self.index]] if self.local_obs else batch.next_observations
         q_next = self.critic_target(q_next_obs, q_next_actions)
         reward = batch.rewards[self.index]
         done = batch.dones[self.index]
