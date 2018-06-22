@@ -240,6 +240,9 @@ def train(args):
 def train_multiple_times(args, num_runs):
     for i in range(num_runs):
         args.exp_run_num = str(i)
+        dirname = os.path.join(args.save_dir, args.exp_name, str(i))
+        if os.path.isdir(dirname):
+            continue
         train(args)
 
 
