@@ -3,6 +3,7 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import RelaxedOneHotCategorical
 
 class Clonable:
     def clone(self):
@@ -20,14 +21,24 @@ class Actor(nn.Module, Clonable):
         self.lin_1 = nn.Linear(n_inputs, n_hidden)
         self.lin_2 = nn.Linear(n_hidden, n_hidden)
         self.lin_3 = nn.Linear(n_hidden, n_outputs)
+        self.temp = torch.tensor([1.0])
 
     def forward(self, x):
         x = F.relu(self.lin_1(x))
         x = F.relu(self.lin_2(x))
-        x = self.lin_3(x)
-        splits_logits = torch.split(x, self.action_split, dim=-1)
-        splits_actions = [F.softmax(s, dim=-1) for s in splits_logits]
-        return torch.cat(splits_actions, dim=-1)
+        logits = self.lin_3(x)
+        return logits
+
+    def select_action(self, obs, explore=False, temp=1.0):
+        logits = self.forward(obs)
+        split_logits = torch.split(logits, self.action_split, dim=-1)
+        if explore:
+            temp = torch.tensor([temp])
+            split_dists = [RelaxedOneHotCategorical(temp, logits=l) for l in split_logits]
+            actions = [d.sample() for d in split_dists]
+        else:
+            actions = [F.softmax(l, dim=-1) for l in split_logits]
+        return torch.cat(actions, dim=-1)
 
 
 class Critic(nn.Module, Clonable):

@@ -21,6 +21,7 @@ class RandomAgent:
     def update(self, agents):
         pass
 
+
 class MaddpgAgent:
     def __init__(self, index, name, actor, critic, params):
         self.index = index
@@ -57,10 +58,7 @@ class MaddpgAgent:
 
     def act(self, obs, explore=True):
         obs = torch.tensor(obs, dtype=torch.float, requires_grad=False)
-        actions = self.actor(obs).detach()
-        if explore:
-            noise = self.sigma * torch.randn_like(actions)
-            actions = actions + noise
+        actions = self.actor.select_action(obs, explore=explore).detach()
         return actions
 
     def experience(self, obs, action, reward, new_obs, done):
@@ -68,14 +66,15 @@ class MaddpgAgent:
 
     def train_actor(self, batch):
         ### forward pass ###
-        pred_actions = self.actor(batch.observations[self.index])
+        pred_actions = self.actor.select_action(batch.observations[self.index])
         actions = list(batch.actions)
         actions[self.index] = pred_actions
         q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
         q_actions = [actions[self.index]] if self.local_actions else actions
         pred_q = self.critic(q_obs, q_actions)
         ### backward pass ###
-        loss = -pred_q.mean()
+        p_reg = torch.mean(self.actor.forward(batch.observations[self.index])**2)
+        loss = -pred_q.mean() + 1e-3 * p_reg
         self.actor_optim.zero_grad()
         loss.backward()
         if self.clip_grads:
@@ -89,9 +88,9 @@ class MaddpgAgent:
         # (a_1', ..., a_n') = (mu'_1(o_1'), ..., mu'_n(o_n'))
         if self.local_actions:
             obs = batch.next_observations[self.index]
-            q_next_actions = [self.actor_target(obs).detach()]
+            q_next_actions = [self.actor_target.select_action(obs).detach()]
         else:
-            q_next_actions = [a.actor_target(o).detach()
+            q_next_actions = [a.actor_target.select_action(o).detach()
                               for o, a in zip(batch.next_observations, agents)]
         q_next_obs = [batch.next_observations[self.index]] if self.local_obs else batch.next_observations
         q_next = self.critic_target(q_next_obs, q_next_actions)
