@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument('--max-episode-len', type=int, default=25, help='maximum episode length')
     parser.add_argument('--num-adversaries', type=int, default=0, help='number of adversaries')
     parser.add_argument('--render', default=False, action='store_true', help='display agent policies')
-    parser.add_argument('--evaluate', default=False, action='store_true', help='run agent policy without noise and training')
+    parser.add_argument('--eval', dest='evaluate', default=False, action='store_true', help='run agent policy without noise and training')
     parser.add_argument('--train-every', type=int, default=100, help='simulation steps in between network updates')
     parser.add_argument('--benchmark', default=False, action='store_true', help='')
     parser.add_argument('--hidden', type=int, default=64, help='number of hidden units in actor and critic')
@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument('--exp-run-num', type=str, default='', help='run number of experiment gets appended to log dir')
     parser.add_argument('--num-runs', type=int)
     parser.add_argument('--train-steps', type=int, default=1, help='how many train steps of the networks are done')
-    parser.add_argument('--eval-every', type=int, default=100)
+    parser.add_argument('--eval-every', type=int, default=500)
     parser.add_argument('--save-every', type=int, default=-1)
     parser.add_argument('--lr-actor', type=float, default=1e-3)
     parser.add_argument('--lr-critic', type=float, default=1e-2)
@@ -47,25 +47,28 @@ def parse_args():
     parser.add_argument('--local-obs', default=False, action='store_true')
     parser.add_argument('--local-actions', default=False, action='store_true')
     parser.add_argument('--conf', type=int)
+    parser.add_argument('--sparse-reward', default=True, action='store_false', dest='shaped')
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
     return parser.parse_args()
 
 
-def make_env(scenario_name, benchmark=False):
+def make_env(scenario_name, shaped=True, benchmark=False):
     scenario = scenarios.load(scenario_name + '.py').Scenario()
     world = scenario.make_world()
-    if benchmark and hasattr(scenario, 'benchmark_data'):
-        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward,
-                            scenario.observation, scenario.benchmark_data)
+    info_callback = scenario.benchmark_data if benchmark else None
+    if scenario.has_shaped_reward:
+        reward_callback = scenario.shaped_reward if shaped else scenario.sparse_reward
     else:
-        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
+        reward_callback = scenario.reward
+    env = MultiAgentEnv(world,
+                        reset_callback=scenario.reset_world,
+                        reward_callback=reward_callback,
+                        observation_callback=scenario.observation,
+                        info_callback=info_callback,
+                        done_callback=scenario.done)
     return env
-
-
-def create_random_agents(env, num_adversaries):
-    return [RandomAgent(i, 'agent_%d' % i, env) for i in range(env.n)]
 
 
 def create_agents(env, params):
@@ -124,13 +127,38 @@ def load_agent_states(dirname, agents, load_memories=False):
         agent.load_state(state)
 
 
+def success_rate(env, agents, num_runs, args):
+    agent_dones_sum = np.zeros(len(agents))
+    dones_sum = 0.0
+    for _ in range(num_runs):
+        obs = env.reset()
+        done = False
+        terminal = False
+        episode_step = 0
+        agent_dones = np.zeros(len(agents), dtype=bool)
+        while not (done or terminal):
+            # epsiode step count
+            episode_step += 1
+            # act with all agents in environment and receive observation and rewards
+            actions = [agent.act(o, explore=False).numpy() for o, agent in zip(obs, agents)]
+            new_obs, _, dones, _ = env.step(actions)
+            agent_dones |= dones
+            done = all(dones)
+            terminal = episode_step >= args.max_episode_len
+            obs = new_obs
+        agent_dones_sum += agent_dones
+        if done:
+            dones_sum += 1
+    return dones_sum / num_runs, agent_dones_sum / num_runs
+
+
 def train(args):
     def signal_handling(signum, frame):
         nonlocal terminated
         terminated = True
     signal.signal(signal.SIGINT, signal_handling)
 
-    env = make_env(args.scenario, args.benchmark)
+    env = make_env(args.scenario, args.shaped, args.benchmark)
     agents = create_agents(env, args)
 
     # load state of agents if state file is given
@@ -145,11 +173,14 @@ def train(args):
     dirname = os.path.join(args.save_dir, args.exp_name, run_name)
     os.makedirs(dirname, exist_ok=True)
     rewards_file = os.path.join(dirname, 'rewards.csv')
+    success_rate_file = os.path.join(dirname, 'success_rate.csv')
     if not os.path.isfile(rewards_file):
         with open(rewards_file, 'w') as f:
             line = ','.join(['cum_reward'] + [a.name for a in agents]) + '\n'
             f.write(line)
-
+    if not os.path.isfile(success_rate_file):
+        with open(success_rate_file, 'w') as f:
+            f.write('step,success_rate\n')
 
     episode_returns = []
     agent_returns = []
@@ -171,10 +202,6 @@ def train(args):
 
             # act with all agents in environment and receive observation and rewards
             actions = [agent.act(o, explore=not args.evaluate) for o, agent in zip(obs, agents)]
-            if args.debug:
-                obs_t = torch.tensor(obs, dtype=torch.float)
-                values = {agent.name: agent.critic(obs_t, actions) for agent in agents}
-                writer.add_scalars('values', values, train_step)
             numpy_actions = [a.numpy() for a in actions]
             new_obs, rewards, dones, _ = env.step(numpy_actions)
             done = all(dones)
@@ -186,7 +213,7 @@ def train(args):
                 agents_cum_reward[i] += reward
 
             # rendering environment
-            if args.render and (len(episode_returns) % args.eval_every == 0):
+            if args.render and ((len(episode_returns) % args.eval_every == 0) or args.evaluate):
                 time.sleep(0.1)
                 env.render()
 
@@ -209,9 +236,15 @@ def train(args):
                             writer.add_scalar('actor_loss', actor_loss, train_step)
                             writer.add_scalar('critic_loss', critic_loss, train_step)
 
-        if len(episode_returns) % args.eval_every == 0:
-            msg = 'step {}: episode {} finished with a return of {:.2f}'
-            print(msg.format(train_step, len(episode_returns), cum_reward))
+        if len(episode_returns) % args.eval_every == 0 or args.evaluate:
+            sr_mean, _ = success_rate(env, agents, 50, args)
+            msg = 'step {}, episode {}:  return {:.2f}, success rate: {:.3f}'
+            if not args.evaluate:
+                with open(success_rate_file, 'a') as f:
+                    line = '{},{}\n'.format(train_step, sr_mean)
+                    f.write(line)
+            print(msg.format(train_step, len(episode_returns), cum_reward, sr_mean))
+
 
         # store and log rewards
         episode_returns.append(cum_reward)
@@ -268,14 +301,16 @@ def run_config(args, num):
     args.local_obs = local_obs
     args.local_actions = local_actions
     args.exp_name = '%s_%s_%s' % (scenario_name, str(local_obs), str(local_actions))
-    train_multiple_times(args, args.num_runs)
+    return args
 
 
 def main():
     args = parse_args()
+
     if args.conf is not None:
-        run_config(args, args.conf)
-    elif args.num_runs is not None:
+        args = run_config(args, args.conf)
+
+    if args.num_runs is not None:
         train_multiple_times(args, args.num_runs)
     else:
         train(args)

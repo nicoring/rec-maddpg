@@ -1,5 +1,4 @@
 gym==0.10.5
--e git+https://github.com/openai/maddpg.git@d138c191de7d9a52396f4c33021b037f733ce6b9#egg=maddpg
 -e git+git@github.com:nicoring/multiagent-particle-envs.git@master#egg=multiagent
 numpy==1.14.3
 numpy-stl==2.4.1
