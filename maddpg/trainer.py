@@ -176,7 +176,7 @@ def train(args):
     success_rate_file = os.path.join(dirname, 'success_rate.csv')
     if not os.path.isfile(rewards_file):
         with open(rewards_file, 'w') as f:
-            line = ','.join(['cum_reward'] + [a.name for a in agents]) + '\n'
+            line = ','.join(['step', 'cum_reward'] + [a.name for a in agents]) + '\n'
             f.write(line)
     if not os.path.isfile(success_rate_file):
         with open(success_rate_file, 'w') as f:
@@ -259,7 +259,7 @@ def train(args):
 
         # save cumulatitive reward and agent rewards
         with open(rewards_file, 'a') as f:
-            line = ','.join(map(str, [cum_reward] + agents_cum_reward)) + '\n'
+            line = ','.join(map(str, [train_step, cum_reward] + agents_cum_reward)) + '\n'
             f.write(line)
 
         # log rewards for tensorboard
