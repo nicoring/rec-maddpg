@@ -187,6 +187,7 @@ def train(args):
     os.makedirs(dirname, exist_ok=True)
     rewards_file = os.path.join(dirname, 'rewards.csv')
     success_rate_file = os.path.join(dirname, 'success_rate.csv')
+    kl_divergence_file = os.path.join(dirname, 'kl_divergence.csv')
     if not os.path.isfile(rewards_file):
         with open(rewards_file, 'w') as f:
             line = ','.join(['step', 'cum_reward'] + [a.name for a in agents]) + '\n'
@@ -194,6 +195,14 @@ def train(args):
     if not os.path.isfile(success_rate_file):
         with open(success_rate_file, 'w') as f:
             f.write('step,success_rate\n')
+    if args.use_agent_models and not os.path.isfile(kl_divergence_file):
+        with open(kl_divergence_file, 'w') as f:
+            headers = []
+            for agent in agents:
+                for model_idx, model in agent.agent_models.items():
+                    for i in range(len(model.action_split)):
+                        headers.append('%d_%d_%d' % (agent.index, model_idx, i))
+            f.write(','.join(headers) + '\n')
 
     episode_returns = []
     agent_returns = []
@@ -244,20 +253,23 @@ def train(args):
             if train_step % args.train_every == 0:
                 for _ in range(args.train_steps):
                     losses = defaultdict(dict)
+                    all_kls = []
                     for agent in agents:
                         actor_loss, critic_loss, model_loss, model_kls = agent.update(agents)
-                        if args.debug:
-                            losses['actor_loss'][agent.name] = actor_loss
-                            losses['critic_loss'][agent.name] = critic_loss
-                            if args.use_agent_models:
-                                losses['model_loss'][agent.name] = model_loss
-                                kls_dict = {}
-                                for idx, kls in model_kls:
-                                    for i, kl in enumerate(kls):
-                                        kls_dict['%s_%i' % (agents[idx].name, i)] = kl
-
+                        losses['actor_loss'][agent.name] = actor_loss
+                        losses['critic_loss'][agent.name] = critic_loss
+                        if args.use_agent_models:
+                            losses['model_loss'][agent.name] = model_loss
+                            kls_dict = {}
+                            for idx, kls in model_kls:
+                                for i, kl in enumerate(kls):
+                                    kls_dict['%s_%i' % (agents[idx].name, i)] = kl
+                                    all_kls.append(kl.item())
+                            if args.debug:
                                 writer.add_scalars('kl_%s' % agent.name, kls_dict, train_step)
-
+                    with open(kl_divergence_file, 'a') as f:
+                        line = ','.join(map(str, all_kls)) + '\n'
+                        f.write(line)
                     if args.debug:
                         for name, loss_dict in losses.items():
                             writer.add_scalars(name, loss_dict, train_step)
@@ -334,11 +346,34 @@ def run_config(args, num):
     return args
 
 
+def run_config2(args, num):
+    scenario_names = [
+        'simple',
+        'simple_adversary',
+        'simple_crypto',
+        'simple_push',
+        'simple_reference',
+        'simple_speaker_listener',
+        'simple_spread',
+        'simple_tag',
+        # 'simple_world_comm'
+    ]
+    obs_actions_model = [[False, True, False],[True, True, False], [False, False, True], [False, False, False]]
+    config = list(it.product(scenario_names, obs_actions_model))[num]
+    scenario_name, (local_obs, local_actions, use_models) = config
+    args.scenario = scenario_name
+    args.local_obs = local_obs
+    args.local_actions = local_actions
+    args.use_agent_models = use_models
+    args.exp_name = '%s_%s_%s_%s' % (scenario_name, str(local_obs), str(local_actions), str(use_models))
+    return args
+
+
 def main():
     args = parse_args()
 
     if args.conf is not None:
-        args = run_config(args, args.conf)
+        args = run_config2(args, args.conf)
 
     if args.num_runs is not None:
         train_multiple_times(args, args.num_runs)
