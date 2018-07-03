@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from memory import ReplayBuffer
-
+import distributions
 
 class RandomAgent:
     def __init__(self, index, name, env):
@@ -49,6 +49,22 @@ class MaddpgAgent:
         self.local_obs = params.local_obs
         self.local_actions = params.local_actions
 
+        # agent modeling
+        self.use_agent_models = params.use_agent_models
+        self.agent_models = {}
+        self.model_optims = {}
+        self.model_lr = 1e-4
+        self.entropy_weight = 1e-3
+
+    def init_agent_models(self, agents):
+        for agent in agents:
+            if agent is self:
+                continue
+            agent_model = agent.actor.clone(requires_grad=True)
+            self.agent_models[agent.index] = agent_model
+            optim = torch.optim.Adam(agent_model.parameters(), lr=self.model_lr)
+            self.model_optims[agent.index] = optim
+
     def update_params(self, target, source):
         zipped = zip(target.parameters(), source.parameters())
         for target_param, source_param in zipped:
@@ -86,12 +102,19 @@ class MaddpgAgent:
         """Train critic with TD-target."""
         ### forward pass ###
         # (a_1', ..., a_n') = (mu'_1(o_1'), ..., mu'_n(o_n'))
-        if self.local_actions:
-            obs = batch.next_observations[self.index]
-            q_next_actions = [self.actor_target.select_action(obs).detach()]
+        self_obs = batch.next_observations[self.index]
+        self_action = self.actor_target.select_action(self_obs).detach()
+        if self.local_actions or self.local_obs:
+            q_next_actions = [self_action]
         else:
-            q_next_actions = [a.actor_target.select_action(o).detach()
-                              for o, a in zip(batch.next_observations, agents)]
+            if self.use_agent_models:
+                q_next_actions = [m.select_action(batch.next_observations[idx]).detach()
+                                  for idx, m in self.agent_models.items()]
+                q_next_actions.insert(self.index, self_action)
+            else:
+                q_next_actions = [a.actor_target.select_action(o).detach()
+                                  for o, a in zip(batch.next_observations, agents)]
+
         q_next_obs = [batch.next_observations[self.index]] if self.local_obs else batch.next_observations
         q_next = self.critic_target(q_next_obs, q_next_actions)
         reward = batch.rewards[self.index]
@@ -103,8 +126,8 @@ class MaddpgAgent:
 
         ### backward pass ###
         # loss(params) = mse(y, Q(o_1, ..., o_n, a_1, ..., a_n))
-        q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
-        q_actions = [batch.actions[self.index]] if self.local_actions else batch.actions
+        q_obs = [batch.observations[self.index]] if self.local_actions else batch.observations
+        q_actions = [batch.actions[self.index]] if (self.local_actions or self.local_obs) else batch.actions
         loss = self.mse(self.critic(q_obs, q_actions), q_target.detach())
 
         self.critic_optim.zero_grad()
@@ -114,12 +137,51 @@ class MaddpgAgent:
         self.critic_optim.step()
         return loss
 
+    def train_models(self, batch, agents):
+        for idx, model in self.agent_models.items():
+            obs = batch.observations[idx]
+            actions = batch.actions[idx]
+            distributions = model.prob_dists(obs)
+            split_actions = torch.split(actions, agents[idx].actor.action_split, dim=-1)
+            self.model_optims[idx].zero_grad()
+            losses = torch.zeros(len(distributions))
+            for i, (actions, dist) in enumerate(zip(split_actions, distributions)):
+                loss = (-dist.log_prob(actions)).mean() # + self.entropy_weight * dist.entropy()
+                losses[i] = loss
+            loss = torch.mean(losses)
+            loss.backward()
+            self.model_optims[idx].step()
+            return loss
+
+    def compare_models(self, agents, batch):
+        kls = []
+        for idx, model in self.agent_models.items():
+            kls.append([])
+            obs = batch.observations[idx]
+            modelled_distributions = model.prob_dists(obs)
+            agent_distributions = agents[idx].actor.prob_dists(obs)
+            for model_dist, agent_dist in zip(modelled_distributions, agent_distributions):
+                kl_div = torch.distributions.kl.kl_divergence(agent_dist, model_dist).data
+                kls[-1].append(kl_div.mean())
+        return zip(self.agent_models.keys(), kls)
+
     def update(self, agents):
         # sample minibatch
         memories = [a.memory for a in agents]
-        batch = ReplayBuffer.sample_from_memories(memories, self.batch_size)
 
         # train networks
+        if self.use_agent_models:
+            model_losses = []
+            for _ in range(20):
+                batch = ReplayBuffer.sample_from_memories(memories, 64)
+                model_losses.append(self.train_models(batch, agents).data)
+            model_loss = np.mean(model_losses)
+            model_kls = self.compare_models(agents, batch)
+        else:
+            model_loss = None
+            model_kls = None
+
+        batch = ReplayBuffer.sample_from_memories(memories, self.batch_size)
         actor_loss = self.train_actor(batch)
         critic_loss = self.train_critic(batch, agents)
 
@@ -127,20 +189,32 @@ class MaddpgAgent:
         self.update_params(self.actor_target, self.actor)
         self.update_params(self.critic_target, self.critic)
 
-        return actor_loss, critic_loss
+        return actor_loss, critic_loss, model_loss, model_kls
 
     def get_state(self):
+        if self.agent_models:
+            models = {i: m.state_dict() for i, m in self.agent_models.items()}
+            optims = {i: o.state_dict() for i, o in self.model_optims.items()}
+            model_pair = (models, optims)
+        else:
+            model_pair = None
         return {
             'actor': self.actor.state_dict(),
             'actor_target': self.actor_target.state_dict(),
             'actor_optim': self.actor_optim.state_dict(),
             'critic': self.critic.state_dict(),
             'critic_target': self.critic_target.state_dict(),
-            'critic_optim': self.critic_optim.state_dict()
-        }, self.memory.memory
+            'critic_optim': self.critic_optim.state_dict(),
+        }, self.memory.memory, model_pair
 
     def load_state(self, state):
         for key, value in state['state_dicts'].items():
             getattr(self, key).load_state_dict(value)
         if 'memory' in state:
-            self.memory.memory.extend(state['memory'])
+            self.memory.memory = state['memory']
+        if 'models' in state:
+            models, optims = state['models']
+            for i, m in models.items():
+                self.agent_models[i].load_state_dict(m)
+            for i, o in optims.items():
+                self.model_optims[i].load_state_dict(o)

@@ -6,10 +6,10 @@ import torch.nn.functional as F
 from torch.distributions import RelaxedOneHotCategorical
 
 class Clonable:
-    def clone(self):
+    def clone(self, requires_grad=False):
         clone = copy.deepcopy(self)
         for param in clone.parameters():
-            param.requires_grad = False
+            param.requires_grad = requires_grad
         return clone
 
 
@@ -29,15 +29,18 @@ class Actor(nn.Module, Clonable):
         logits = self.lin_3(x)
         return logits
 
-    def select_action(self, obs, explore=False, temp=1.0):
+    def prob_dists(self, obs, temp=1.0):
         logits = self.forward(obs)
         split_logits = torch.split(logits, self.action_split, dim=-1)
+        temp = torch.tensor([temp])
+        return [RelaxedOneHotCategorical(temp, logits=l) for l in split_logits]
+
+    def select_action(self, obs, explore=False, temp=1.0):
+        distributions = self.prob_dists(obs, temp)
         if explore:
-            temp = torch.tensor([temp])
-            split_dists = [RelaxedOneHotCategorical(temp, logits=l) for l in split_logits]
-            actions = [d.sample() for d in split_dists]
+            actions = [d.sample() for d in distributions]
         else:
-            actions = [F.softmax(l, dim=-1) for l in split_logits]
+            actions = [d.probs for d in distributions]
         return torch.cat(actions, dim=-1)
 
 

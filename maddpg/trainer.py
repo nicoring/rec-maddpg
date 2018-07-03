@@ -3,6 +3,7 @@ import time
 import os
 import signal
 import itertools as it
+from collections import defaultdict
 
 import numpy as np
 from tensorboardX import SummaryWriter
@@ -48,6 +49,7 @@ def parse_args():
     parser.add_argument('--local-actions', default=False, action='store_true')
     parser.add_argument('--conf', type=int)
     parser.add_argument('--sparse-reward', default=True, action='store_false', dest='shaped')
+    parser.add_argument('--use-agent-models', default=False, action='store_true')
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -103,27 +105,35 @@ def create_agents(env, params):
     return agents
 
 
-def save_agent_states(dirname, agents, save_memories=False):
+def save_agent_states(dirname, agents, save_memories=False, save_models=False):
     states_and_memories = [agent.get_state() for agent in agents]
-    states, memories = zip(*states_and_memories)
+    states, memories, models = zip(*states_and_memories)
     states_filename = os.path.join(dirname, 'states.pth.tar')
-    memories_filename = os.path.join(dirname, 'memories.pth.tar')
     torch.save(states, states_filename)
     if save_memories:
+        memories_filename = os.path.join(dirname, 'memories.pth.tar')
         torch.save(memories, memories_filename)
+    if save_models:
+        models_filename = os.path.join(dirname, 'models.pth.tar')
+        torch.save(models, models_filename)
 
 
-def load_agent_states(dirname, agents, load_memories=False):
+def load_agent_states(dirname, agents, load_memories=False, load_models=False):
     states_filename = os.path.join(dirname, 'states.pth.tar')
-    memories_filename = os.path.join(dirname, 'memories.pth.tar')
     states = torch.load(states_filename)
     if load_memories:
+        memories_filename = os.path.join(dirname, 'memories.pth.tar')
         memories = torch.load(memories_filename)
+    if load_models:
+        models_filename = os.path.join(dirname, 'models.pth.tar')
+        models = torch.load(models_filename)
     for i, agent in enumerate(agents):
         state = {}
         state['state_dicts'] = states[i]
         if load_memories:
             state['memory'] = memories[i]
+        if load_models:
+            state['models'] = models[i]
         agent.load_state(state)
 
 
@@ -160,10 +170,13 @@ def train(args):
 
     env = make_env(args.scenario, args.shaped, args.benchmark)
     agents = create_agents(env, args)
+    if args.use_agent_models:
+        for agent in agents:
+            agent.init_agent_models(agents)
 
     # load state of agents if state file is given
     if args.resume:
-        load_agent_states(args.resume, agents)
+        load_agent_states(args.resume, agents, load_models=args.use_agent_models)
         args.exp_name, args.exp_run_num = os.path.normpath(args.resume).split('/')[-2:]
         args.save_dir = os.path.join(args.resume[:-2])
 
@@ -230,11 +243,25 @@ def train(args):
             # train agents
             if train_step % args.train_every == 0:
                 for _ in range(args.train_steps):
+                    losses = defaultdict(dict)
                     for agent in agents:
-                        actor_loss, critic_loss = agent.update(agents)
+                        actor_loss, critic_loss, model_loss, model_kls = agent.update(agents)
                         if args.debug:
-                            writer.add_scalar('actor_loss', actor_loss, train_step)
-                            writer.add_scalar('critic_loss', critic_loss, train_step)
+                            losses['actor_loss'][agent.name] = actor_loss
+                            losses['critic_loss'][agent.name] = critic_loss
+                            if args.use_agent_models:
+                                losses['model_loss'][agent.name] = model_loss
+                                kls_dict = {}
+                                for idx, kls in model_kls:
+                                    for i, kl in enumerate(kls):
+                                        kls_dict['%s_%i' % (agents[idx].name, i)] = kl
+
+                                writer.add_scalars('kl_%s' % agent.name, kls_dict, train_step)
+
+                    if args.debug:
+                        for name, loss_dict in losses.items():
+                            writer.add_scalars(name, loss_dict, train_step)
+
 
         if len(episode_returns) % args.eval_every == 0 or args.evaluate:
             sr_mean, _ = success_rate(env, agents, 50, args)
@@ -243,6 +270,8 @@ def train(args):
                 with open(success_rate_file, 'a') as f:
                     line = '{},{}\n'.format(train_step, sr_mean)
                     f.write(line)
+            if args.debug:
+                writer.add_scalar('success_rate', sr_mean, train_step)
             print(msg.format(train_step, len(episode_returns), cum_reward, sr_mean))
 
 
@@ -255,7 +284,7 @@ def train(args):
 
         # save agent states
         if (args.save_every != -1) and (len(episode_returns) % args.save_every == 0):
-            save_agent_states(dirname, agents)
+            save_agent_states(dirname, agents, save_models=args.use_agent_models)
 
         # save cumulatitive reward and agent rewards
         with open(rewards_file, 'a') as f:
@@ -263,9 +292,10 @@ def train(args):
             f.write(line)
 
         # log rewards for tensorboard
-        agent_rewards_dict = {a.name: r for a, r in zip(agents, agents_cum_reward)}
-        writer.add_scalar('reward', cum_reward, train_step)
-        writer.add_scalars('agent_rewards', agent_rewards_dict, train_step)
+        if args.debug:
+            agent_rewards_dict = {a.name: r for a, r in zip(agents, agents_cum_reward)}
+            writer.add_scalar('reward', cum_reward, train_step)
+            writer.add_scalars('agent_rewards', agent_rewards_dict, train_step)
 
     print('Finished training with %d episodes' % len(episode_returns))
 

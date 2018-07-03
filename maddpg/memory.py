@@ -1,5 +1,5 @@
 import os
-from collections import namedtuple, deque
+from collections import namedtuple
 import random
 import pickle
 
@@ -12,10 +12,36 @@ Transition = namedtuple('Transition', ('observation', 'action', 'reward', 'next_
 Batch = namedtuple('Batch', ('observations', 'actions', 'rewards', 'next_observations', 'dones'))
 
 
+class RingBuffer:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.storage = []
+        self.next_idx = 0
+
+    def append(self, data):
+        if self.next_idx >= len(self.storage):
+            self.storage.append(data)
+        else:
+            self.storage[self.next_idx] = data
+        self.next_idx = (self.next_idx + 1) % self.capacity
+
+    def __len__(self):
+        return len(self.storage)
+
+    def __getitem__(self, key):
+        return self.storage[key]
+
+    def __setitem__(self, key, value):
+        self.storage[key] = value
+
+    def __iter__(self):
+        return iter(self.storage)
+
+
 class ReplayBuffer:
     def __init__(self, capacity):
         self.capacity = capacity
-        self.memory = deque([], maxlen=capacity)
+        self.memory = RingBuffer(capacity)
 
     @staticmethod
     def sample_from_memories(memories, batch_size):
@@ -54,5 +80,4 @@ class ReplayBuffer:
     def load(self, path):
         filename = os.path.join(path, 'memory.pkl')
         with open(filename, 'rb') as f:
-            transitions = pickle.load(f)
-            self.memory.extend(transitions)
+            self.memory = pickle.load(f)
