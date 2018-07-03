@@ -173,7 +173,7 @@ class MaddpgAgent:
         if self.use_agent_models:
             model_losses = []
             for _ in range(20):
-                batch = ReplayBuffer.sample_from_memories(memories, 64)
+                batch = ReplayBuffer.sample_from_memories(memories, 64, max_past=5000)
                 model_losses.append(self.train_models(batch, agents).data)
             model_loss = np.mean(model_losses)
             model_kls = self.compare_models(agents, batch)
