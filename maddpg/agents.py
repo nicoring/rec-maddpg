@@ -126,7 +126,7 @@ class MaddpgAgent:
 
         ### backward pass ###
         # loss(params) = mse(y, Q(o_1, ..., o_n, a_1, ..., a_n))
-        q_obs = [batch.observations[self.index]] if self.local_actions else batch.observations
+        q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
         q_actions = [batch.actions[self.index]] if (self.local_actions or self.local_obs) else batch.actions
         loss = self.mse(self.critic(q_obs, q_actions), q_target.detach())
 

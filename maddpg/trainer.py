@@ -361,6 +361,7 @@ def run_config2(args, num):
     obs_actions_model = [[False, True, False],[True, True, False], [False, False, True], [False, False, False]]
     config = list(it.product(scenario_names, obs_actions_model))[num]
     scenario_name, (local_obs, local_actions, use_models) = config
+    print('running conf: (scenario: %s, local_obs: %r, local_actions: %r, use_models: %r)' % (scenario_name, local_obs, local_actions, use_models))
     args.scenario = scenario_name
     args.local_obs = local_obs
     args.local_actions = local_actions
