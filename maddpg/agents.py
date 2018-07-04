@@ -53,8 +53,11 @@ class MaddpgAgent:
         self.use_agent_models = params.use_agent_models
         self.agent_models = {}
         self.model_optims = {}
-        self.model_lr = 1e-4
+        self.model_lr = params.modeling_lr
         self.entropy_weight = 1e-3
+        self.max_past = params.max_past
+        self.modeling_train_steps = params.modeling_train_steps
+        self.modeling_batch_size = params.modeling_batch_size
 
     def init_agent_models(self, agents):
         for agent in agents:
@@ -172,8 +175,10 @@ class MaddpgAgent:
         # train networks
         if self.use_agent_models:
             model_losses = []
-            for _ in range(20):
-                batch = ReplayBuffer.sample_from_memories(memories, 64, max_past=5000)
+            for _ in range(self.modeling_train_steps):
+                batch = ReplayBuffer.sample_from_memories(memories,
+                                                          self.modeling_batch_size,
+                                                          max_past=self.max_past)
                 model_losses.append(self.train_models(batch, agents).data)
             model_loss = np.mean(model_losses)
             model_kls = self.compare_models(agents, batch)

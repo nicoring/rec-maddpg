@@ -49,7 +49,13 @@ def parse_args():
     parser.add_argument('--local-actions', default=False, action='store_true')
     parser.add_argument('--conf', type=int)
     parser.add_argument('--sparse-reward', default=True, action='store_false', dest='shaped')
+
+    ## Agent modeling
     parser.add_argument('--use-agent-models', default=False, action='store_true')
+    parser.add_argument('--max-past', type=int, default=5000)
+    parser.add_argument('--modeling-train-steps', type=int, default=20)
+    parser.add_argument('--modeling-batch-size', type=int, default=64)
+    parser.add_argument('--modeling-lr', type=float, default=1e-4)
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -197,7 +203,7 @@ def train(args):
             f.write('step,success_rate\n')
     if args.use_agent_models and not os.path.isfile(kl_divergence_file):
         with open(kl_divergence_file, 'w') as f:
-            headers = []
+            headers = ['step']
             for agent in agents:
                 for model_idx, model in agent.agent_models.items():
                     for i in range(len(model.action_split)):
@@ -268,7 +274,7 @@ def train(args):
                             if args.debug:
                                 writer.add_scalars('kl_%s' % agent.name, kls_dict, train_step)
                     with open(kl_divergence_file, 'a') as f:
-                        line = ','.join(map(str, all_kls)) + '\n'
+                        line = ','.join(map(str, [train_step] + all_kls)) + '\n'
                         f.write(line)
                     if args.debug:
                         for name, loss_dict in losses.items():
