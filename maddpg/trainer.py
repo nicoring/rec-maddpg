@@ -278,9 +278,10 @@ def train(args):
                                     all_kls.append(kl.item())
                             if args.debug:
                                 writer.add_scalars('kl_%s' % agent.name, kls_dict, train_step)
-                    with open(kl_divergence_file, 'a') as f:
-                        line = ','.join(map(str, [train_step] + all_kls)) + '\n'
-                        f.write(line)
+                    if args.use_agent_models:
+                        with open(kl_divergence_file, 'a') as f:
+                            line = ','.join(map(str, [train_step] + all_kls)) + '\n'
+                            f.write(line)
                     if args.debug:
                         for name, loss_dict in losses.items():
                             writer.add_scalars(name, loss_dict, train_step)
