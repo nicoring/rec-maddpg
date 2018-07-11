@@ -13,7 +13,7 @@
 . /etc/profile.d/modules.sh
  
 # Load Python
-module load anaconda
+module load anaconda/5.0.1
 
 source activate thesis
  

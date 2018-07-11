@@ -362,7 +362,8 @@ def run_config2(args, num):
         'simple_speaker_listener',
         'simple_spread',
         'simple_tag',
-        # 'simple_world_comm'
+        'simple_world_comm',
+        'simple_spread_comm'
     ]
     obs_actions_model = [[False, True, False],[True, True, False], [False, False, True], [False, False, False]]
     config = list(it.product(scenario_names, obs_actions_model))[num]

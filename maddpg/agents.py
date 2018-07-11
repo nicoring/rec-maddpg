@@ -4,7 +4,56 @@ import torch
 from memory import ReplayBuffer
 import distributions
 
-class RandomAgent:
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+class Agent:
+    def act(self, obs):
+        raise NotImplementedError
+
+    def experience(self, obs, action, reward, new_obs, done):
+        pass
+
+    def update(self, agents):
+        pass
+
+
+class SpreadScriptedAgent(Agent):
+    def __init__(self, index, name, env):
+        self.env = env
+        self.index = index
+        self.name = name
+
+    @staticmethod
+    def length(a):
+        return np.sqrt(np.sum(a**2))
+
+    @staticmethod
+    def acc2action(acc):
+        action = np.zeros(4)
+        for a in acc:
+            if a >= 0:
+                action[0] = a
+            else:
+                action[1] = -a
+        if abs(np.sum(action)) > 0:
+            action = action / np.sum(action)
+        return action
+
+    def act(self, obs):
+        # vel = obs[:2]
+        l1 = obs[2:4]
+        l2 = obs[4:6]
+        l3 = obs[6:8]
+        # a1 = obs[8:10]
+        # a2 = obs[10:12]
+        # target = self.get_target([l1, l2, l3], [a1, a2])
+        landmarks = [l1, l2, l3]
+        dists = [self.length(l) for l in landmarks]
+        target = landmarks[np.argmin(dists)]
+        return self.acc2action(target)
+
+
+class RandomAgent(Agent):
     def __init__(self, index, name, env):
         self.env = env
         self.index = index
@@ -15,22 +64,16 @@ class RandomAgent:
         logits = np.random.sample(self.num_actions)
         return logits / np.sum(logits)
 
-    def experience(self, obs, action, reward, new_obs, done):
-        pass
 
-    def update(self, agents):
-        pass
-
-
-class MaddpgAgent:
+class MaddpgAgent(Agent):
     def __init__(self, index, name, actor, critic, params):
         self.index = index
         self.name = name
 
-        self.actor = actor
-        self.critic = critic
-        self.actor_target = actor.clone()
-        self.critic_target = critic.clone()
+        self.actor = actor.to(device)
+        self.critic = critic.to(device)
+        self.actor_target = actor.clone().to(device)
+        self.critic_target = critic.clone().to(device)
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=params.lr_actor)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=params.lr_critic)
         self.memory = ReplayBuffer(params.memory_size)
@@ -63,7 +106,7 @@ class MaddpgAgent:
         for agent in agents:
             if agent is self:
                 continue
-            agent_model = agent.actor.clone(requires_grad=True)
+            agent_model = agent.actor.clone(requires_grad=True).to(device)
             self.agent_models[agent.index] = agent_model
             optim = torch.optim.Adam(agent_model.parameters(), lr=self.model_lr)
             self.model_optims[agent.index] = optim
@@ -76,9 +119,9 @@ class MaddpgAgent:
             target_param.data.copy_(updated_param)
 
     def act(self, obs, explore=True):
-        obs = torch.tensor(obs, dtype=torch.float, requires_grad=False)
+        obs = torch.tensor(obs, dtype=torch.float, requires_grad=False).to(device)
         actions = self.actor.select_action(obs, explore=explore).detach()
-        return actions
+        return actions.to('cpu')
 
     def experience(self, obs, action, reward, new_obs, done):
         self.memory.add(obs, action, reward, new_obs, float(done))

@@ -82,11 +82,11 @@ class ReplayBuffer:
         else:
             transitions = [self.memory[i] for i in index]
         batch = Batch(*zip(*transitions))
-        observations = torch.tensor(batch.observations, dtype=torch.float)
-        actions = torch.stack(batch.actions)
-        rewards = torch.tensor(batch.rewards, dtype=torch.float).unsqueeze(1)
-        next_observations = torch.tensor(batch.next_observations, dtype=torch.float)
-        dones = torch.tensor(batch.dones).unsqueeze(1)
+        observations = torch.tensor(batch.observations, dtype=torch.float).to(device)
+        actions = torch.stack(batch.actions).to(device)
+        rewards = torch.tensor(batch.rewards, dtype=torch.float).unsqueeze(1).to(device)
+        next_observations = torch.tensor(batch.next_observations, dtype=torch.float).to(device)
+        dones = torch.tensor(batch.dones).unsqueeze(1).to(device)
         return Batch(observations, actions, rewards, next_observations, dones)
 
     def __len__(self):
