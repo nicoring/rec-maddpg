@@ -408,7 +408,7 @@ def run_config3(args, num):
     args.local_obs = local_obs
     args.local_actions = local_actions
     args.use_agent_models = use_models
-    if noise >= 0.1:
+    if noise > 0.0:
         args.obfuscation_noise = noise
     args.exp_name = '%s_%s_%s_%s_%f' % (scenario_name, str(local_obs), str(local_actions), str(use_models), noise)
     return args
@@ -418,7 +418,7 @@ def main():
     args = parse_args()
 
     if args.conf is not None:
-        args = run_config3(args, args.conf)
+        args = run_config3(args, args.conf-1)
 
     if args.num_runs is not None:
         train_multiple_times(args, args.num_runs)

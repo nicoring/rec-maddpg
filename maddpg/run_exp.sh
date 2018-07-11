@@ -1,0 +1,1 @@
+python trainer.py --max-train-steps 1000000 --save-dir $1 --save-every 1000 --num-runs 10 --conf $SGE_TASK_ID

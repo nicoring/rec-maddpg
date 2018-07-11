@@ -1,1 +1,0 @@
-longjob -28day -nobackground -c "nice -n 10 python trainer.py --max-train-steps 1000000 --save-dir exp-1-3 --save-every 1000 --num-runs 10 --conf $1"
