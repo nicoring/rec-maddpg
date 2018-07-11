@@ -1,3 +1,5 @@
+import itertools as it
+
 import numpy as np
 import torch
 
@@ -7,7 +9,7 @@ import distributions
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class Agent:
-    def act(self, obs):
+    def act(self, obs, **kwargs):
         raise NotImplementedError
 
     def experience(self, obs, action, reward, new_obs, done):
@@ -29,27 +31,34 @@ class SpreadScriptedAgent(Agent):
 
     @staticmethod
     def acc2action(acc):
-        action = np.zeros(4)
-        for a in acc:
+        action = np.zeros(5)
+        for i, a in enumerate(acc):
             if a >= 0:
-                action[0] = a
+                action[1+i*2] = a
             else:
-                action[1] = -a
+                action[2+i*2] = -a
         if abs(np.sum(action)) > 0:
             action = action / np.sum(action)
         return action
 
-    def act(self, obs):
+    def get_target(self, agents, landmarks):
+        matchings = [list(zip(agents, p)) for p in it.permutations(landmarks)]
+        dists = [sum(self.length(l - a) for a, l in m) for m in matchings]
+        best_matching = matchings[np.argmin(dists)]
+        return best_matching[self.index][1]
+
+    def act(self, obs, **kwargs):
         # vel = obs[:2]
         l1 = obs[2:4]
         l2 = obs[4:6]
         l3 = obs[6:8]
-        # a1 = obs[8:10]
-        # a2 = obs[10:12]
+        a1 = obs[8:10]
+        a2 = obs[10:12]
         # target = self.get_target([l1, l2, l3], [a1, a2])
         landmarks = [l1, l2, l3]
-        dists = [self.length(l) for l in landmarks]
-        target = landmarks[np.argmin(dists)]
+        agents = [a1, a2]
+        agents.insert(self.index, [0, 0])
+        target = self.get_target(agents, landmarks)
         return self.acc2action(target)
 
 
@@ -60,15 +69,16 @@ class RandomAgent(Agent):
         self.name = name
         self.num_actions = self.env.action_space[self.index].n
 
-    def act(self, obs):
+    def act(self, obs, **kwargs):
         logits = np.random.sample(self.num_actions)
         return logits / np.sum(logits)
 
 
 class MaddpgAgent(Agent):
-    def __init__(self, index, name, actor, critic, params):
+    def __init__(self, index, name, env, actor, critic, params):
         self.index = index
         self.name = name
+        self.env = env
 
         self.actor = actor.to(device)
         self.critic = critic.to(device)
@@ -102,6 +112,10 @@ class MaddpgAgent(Agent):
         self.modeling_train_steps = params.modeling_train_steps
         self.modeling_batch_size = params.modeling_batch_size
 
+        # action and observation noise
+        self.obfuscate_others = params.obfuscation_noise is not None
+        self.sigma_noise = params.obfuscation_noise
+
     def init_agent_models(self, agents):
         for agent in agents:
             if agent is self:
@@ -121,7 +135,7 @@ class MaddpgAgent(Agent):
     def act(self, obs, explore=True):
         obs = torch.tensor(obs, dtype=torch.float, requires_grad=False).to(device)
         actions = self.actor.select_action(obs, explore=explore).detach()
-        return actions.to('cpu')
+        return actions.to('cpu').numpy()
 
     def experience(self, obs, action, reward, new_obs, done):
         self.memory.add(obs, action, reward, new_obs, float(done))
@@ -211,17 +225,34 @@ class MaddpgAgent(Agent):
                 kls[-1].append(kl_div.mean())
         return zip(self.agent_models.keys(), kls)
 
+    def add_noise(self, batch):
+        for i in range(len(batch.actions)):
+            if i == self.index:
+                continue
+            # get observations and actions for agent i
+            obs = batch.observations[i]
+            actions = batch.actions[i]
+            # create noise tensors, same shape and on same device
+            # TODO: adapt noise to the observations and action types
+            obs_noise = torch.randn_like(obs) * self.sigma_noise
+            actions_noise = torch.randn_like(actions) * self.sigma_noise
+            # add noise in-place
+            batch.observations[i].add_(obs_noise)
+            batch.actions[i].add_(actions_noise)
+
     def update(self, agents):
-        # sample minibatch
+        # collect transistion memories form all agents
         memories = [a.memory for a in agents]
 
-        # train networks
+        # train model networks
         if self.use_agent_models:
             model_losses = []
             for _ in range(self.modeling_train_steps):
                 batch = ReplayBuffer.sample_from_memories(memories,
                                                           self.modeling_batch_size,
                                                           max_past=self.max_past)
+                if self.obfuscate_others:
+                    self.add_noise(batch)
                 model_losses.append(self.train_models(batch, agents).data)
             model_loss = np.mean(model_losses)
             model_kls = self.compare_models(agents, batch)
@@ -229,7 +260,11 @@ class MaddpgAgent(Agent):
             model_loss = None
             model_kls = None
 
+        # sample minibatch
         batch = ReplayBuffer.sample_from_memories(memories, self.batch_size)
+        if self.obfuscate_others:
+            self.add_noise(batch)
+        # train actor and critic network
         actor_loss = self.train_actor(batch)
         critic_loss = self.train_critic(batch, agents)
 

@@ -12,7 +12,7 @@ import gym
 from multiagent.environment import MultiAgentEnv
 import multiagent.scenarios as scenarios
 
-from agents import MaddpgAgent, RandomAgent
+from agents import MaddpgAgent, RandomAgent, SpreadScriptedAgent
 from models import Actor, Critic
 
 
@@ -56,6 +56,7 @@ def parse_args():
     parser.add_argument('--modeling-train-steps', type=int, default=20)
     parser.add_argument('--modeling-batch-size', type=int, default=64)
     parser.add_argument('--modeling-lr', type=float, default=1e-4)
+    parser.add_argument('--obfuscation-noise', type=float)
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
 
@@ -106,7 +107,7 @@ def create_agents(env, params):
         n_observations = env.observation_space[i].shape[0]
         actor = Actor(n_observations, action_splits[i], params.hidden)
         critic = Critic(n_critic_inputs, params.hidden)
-        agent = MaddpgAgent(i, 'agent_%d' % i, actor, critic, params)
+        agent = MaddpgAgent(i, 'agent_%d' % i, env, actor, critic, params)
         agents.append(agent)
     return agents
 
@@ -146,26 +147,30 @@ def load_agent_states(dirname, agents, load_memories=False, load_models=False):
 def success_rate(env, agents, num_runs, args):
     agent_dones_sum = np.zeros(len(agents))
     dones_sum = 0.0
+    rewards_all = []
     for _ in range(num_runs):
         obs = env.reset()
         done = False
         terminal = False
         episode_step = 0
         agent_dones = np.zeros(len(agents), dtype=bool)
+        cum_rewards = np.zeros(len(agents), dtype=np.float)
         while not (done or terminal):
             # epsiode step count
             episode_step += 1
             # act with all agents in environment and receive observation and rewards
-            actions = [agent.act(o, explore=False).numpy() for o, agent in zip(obs, agents)]
-            new_obs, _, dones, _ = env.step(actions)
+            actions = [agent.act(o, explore=False) for o, agent in zip(obs, agents)]
+            new_obs, rewards, dones, _ = env.step(actions)
+            cum_rewards += rewards
             agent_dones |= dones
             done = all(dones)
             terminal = episode_step >= args.max_episode_len
             obs = new_obs
         agent_dones_sum += agent_dones
+        rewards_all.append(cum_rewards)
         if done:
             dones_sum += 1
-    return dones_sum / num_runs, agent_dones_sum / num_runs
+    return dones_sum / num_runs, agent_dones_sum / num_runs, np.mean(rewards_all, axis=0)
 
 
 def train(args):
@@ -215,6 +220,7 @@ def train(args):
     train_step = 0
     terminated = False
 
+    last_time = time.time()
     while (train_step <= args.max_train_steps) and not terminated:
         obs = env.reset()
         done = False
@@ -230,8 +236,7 @@ def train(args):
 
             # act with all agents in environment and receive observation and rewards
             actions = [agent.act(o, explore=not args.evaluate) for o, agent in zip(obs, agents)]
-            numpy_actions = [a.numpy() for a in actions]
-            new_obs, rewards, dones, _ = env.step(numpy_actions)
+            new_obs, rewards, dones, _ = env.step(actions)
             done = all(dones)
             terminal = episode_step >= args.max_episode_len
 
@@ -282,16 +287,20 @@ def train(args):
 
 
         if len(episode_returns) % args.eval_every == 0 or args.evaluate:
-            sr_mean, _ = success_rate(env, agents, 50, args)
-            msg = 'step {}, episode {}:  return {:.2f}, success rate: {:.3f}'
+            sr_mean, _, rewards = success_rate(env, agents, 50, args)
+            msg = 'time: {:.0f}s, step {}, episode {}: success rate: {:.3f}, return: {:.2f}, ' 
+            msg += ', '.join([a.name + ': {:.2f}' for a in agents])
             if not args.evaluate:
                 with open(success_rate_file, 'a') as f:
                     line = '{},{}\n'.format(train_step, sr_mean)
                     f.write(line)
             if args.debug:
                 writer.add_scalar('success_rate', sr_mean, train_step)
-            print(msg.format(train_step, len(episode_returns), cum_reward, sr_mean))
-
+            cum_reward = rewards.sum()
+            new_time = time.time()
+            elapsed_time = new_time - last_time
+            last_time = new_time
+            print(msg.format(elapsed_time, train_step, len(episode_returns), sr_mean, cum_reward, *rewards))
 
         # store and log rewards
         episode_returns.append(cum_reward)
@@ -377,11 +386,39 @@ def run_config2(args, num):
     return args
 
 
+def run_config3(args, num):
+    scenario_names = [
+        # 'simple',
+        # 'simple_adversary',
+        # 'simple_crypto',
+        # 'simple_push',
+        # 'simple_reference',
+        # 'simple_speaker_listener',
+        'simple_spread',
+        # 'simple_tag',
+        # 'simple_world_comm',
+        # 'simple_spread_comm'
+    ]
+    obs_actions_model = [[False, True, False],[True, True, False], [False, False, True], [False, False, False]]
+    noises = [0.0, 0.1, 0.3, 0.6, 0.9]
+    config = list(it.product(scenario_names, obs_actions_model, noises))[num]
+    scenario_name, (local_obs, local_actions, use_models), noise = config
+    print('running conf: (scenario: %s, local_obs: %r, local_actions: %r, use_models: %r, noise: %f)' % (scenario_name, local_obs, local_actions, use_models, noise))
+    args.scenario = scenario_name
+    args.local_obs = local_obs
+    args.local_actions = local_actions
+    args.use_agent_models = use_models
+    if noise >= 0.1:
+        args.obfuscation_noise = noise
+    args.exp_name = '%s_%s_%s_%s_%f' % (scenario_name, str(local_obs), str(local_actions), str(use_models), noise)
+    return args
+
+
 def main():
     args = parse_args()
 
     if args.conf is not None:
-        args = run_config2(args, args.conf)
+        args = run_config3(args, args.conf)
 
     if args.num_runs is not None:
         train_multiple_times(args, args.num_runs)
