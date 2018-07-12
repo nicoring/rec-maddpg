@@ -2,6 +2,7 @@ import argparse
 import time
 import os
 import signal
+import math
 import itertools as it
 from collections import defaultdict
 
@@ -38,7 +39,7 @@ def parse_args():
     parser.add_argument('--exp-run-num', type=str, default='', help='run number of experiment gets appended to log dir')
     parser.add_argument('--num-runs', type=int)
     parser.add_argument('--train-steps', type=int, default=1, help='how many train steps of the networks are done')
-    parser.add_argument('--eval-every', type=int, default=500)
+    parser.add_argument('--eval-every', type=int, default=1000)
     parser.add_argument('--save-every', type=int, default=-1)
     parser.add_argument('--lr-actor', type=float, default=1e-3)
     parser.add_argument('--lr-critic', type=float, default=1e-2)
@@ -144,8 +145,7 @@ def load_agent_states(dirname, agents, load_memories=False, load_models=False):
         agent.load_state(state)
 
 
-def success_rate(env, agents, num_runs, args):
-    agent_dones_sum = np.zeros(len(agents))
+def evaluate(env, agents, num_runs, args):
     dones_sum = 0.0
     rewards_all = []
     for _ in range(num_runs):
@@ -153,7 +153,6 @@ def success_rate(env, agents, num_runs, args):
         done = False
         terminal = False
         episode_step = 0
-        agent_dones = np.zeros(len(agents), dtype=bool)
         cum_rewards = np.zeros(len(agents), dtype=np.float)
         while not (done or terminal):
             # epsiode step count
@@ -162,16 +161,20 @@ def success_rate(env, agents, num_runs, args):
             actions = [agent.act(o, explore=False) for o, agent in zip(obs, agents)]
             new_obs, rewards, dones, _ = env.step(actions)
             cum_rewards += rewards
-            agent_dones |= dones
             done = all(dones)
             terminal = episode_step >= args.max_episode_len
             obs = new_obs
-        agent_dones_sum += agent_dones
         rewards_all.append(cum_rewards)
         if done:
             dones_sum += 1
-    return dones_sum / num_runs, agent_dones_sum / num_runs, np.mean(rewards_all, axis=0)
+    return dones_sum / num_runs, np.mean(rewards_all, axis=0)
 
+def time_since(since):
+    now = time.time()
+    s = now - since
+    m = math.floor(s / 60)
+    s -= m * 60
+    return '%dm %ds' % (m, s)
 
 def train(args):
     def signal_handling(signum, frame):
@@ -196,13 +199,15 @@ def train(args):
     writer = SummaryWriter(log_dir=os.path.join('tensorboard-logs', args.exp_name, run_name))
     dirname = os.path.join(args.save_dir, args.exp_name, run_name)
     os.makedirs(dirname, exist_ok=True)
-    rewards_file = os.path.join(dirname, 'rewards.csv')
+    train_rewards_file = os.path.join(dirname, 'train_rewards.csv')
+    eval_rewards_file = os.path.join(dirname, 'eval_rewards.csv')
     success_rate_file = os.path.join(dirname, 'success_rate.csv')
     kl_divergence_file = os.path.join(dirname, 'kl_divergence.csv')
-    if not os.path.isfile(rewards_file):
-        with open(rewards_file, 'w') as f:
-            line = ','.join(['step', 'cum_reward'] + [a.name for a in agents]) + '\n'
-            f.write(line)
+    for rewards_file in [train_rewards_file, eval_rewards_file]:
+        if not os.path.isfile(rewards_file):
+            with open(rewards_file, 'w') as f:
+                line = ','.join(['step', 'cum_reward'] + [a.name for a in agents]) + '\n'
+                f.write(line)
     if not os.path.isfile(success_rate_file):
         with open(success_rate_file, 'w') as f:
             f.write('step,success_rate\n')
@@ -215,12 +220,11 @@ def train(args):
                         headers.append('%d_%d_%d' % (agent.index, model_idx, i))
             f.write(','.join(headers) + '\n')
 
-    episode_returns = []
-    agent_returns = []
+    episode_count = 0
     train_step = 0
     terminated = False
 
-    last_time = time.time()
+    start_time = time.time()
     while (train_step <= args.max_train_steps) and not terminated:
         obs = env.reset()
         done = False
@@ -246,13 +250,13 @@ def train(args):
                 agents_cum_reward[i] += reward
 
             # rendering environment
-            if args.render and ((len(episode_returns) % args.eval_every == 0) or args.evaluate):
+            if args.render and ((episode_count % 500 == 0) or args.evaluate):
                 time.sleep(0.1)
                 env.render()
 
             # store tuples (observation, action, reward, next observation, is done) for each agent
             for i, agent in enumerate(agents):
-                agent.experience(obs[i], actions[i], rewards[i], new_obs[i], dones[i])
+                agent.experience(episode_count, obs[i], actions[i], rewards[i], new_obs[i], dones[i])
 
             # store current observation for next step
             obs = new_obs
@@ -285,37 +289,33 @@ def train(args):
                     if args.debug:
                         for name, loss_dict in losses.items():
                             writer.add_scalars(name, loss_dict, train_step)
+        episode_count += 1
 
-
-        if len(episode_returns) % args.eval_every == 0 or args.evaluate:
-            sr_mean, _, rewards = success_rate(env, agents, 50, args)
-            msg = 'time: {:.0f}s, step {}, episode {}: success rate: {:.3f}, return: {:.2f}, ' 
+        if train_step % args.eval_every == 0 or args.evaluate:
+            sr_mean, rewards = evaluate(env, agents, 50, args)
+            msg = 'time: {}, step {}, episode {}: success rate: {:.3f}, return: {:.2f}, '
             msg += ', '.join([a.name + ': {:.2f}' for a in agents])
             if not args.evaluate:
                 with open(success_rate_file, 'a') as f:
                     line = '{},{}\n'.format(train_step, sr_mean)
                     f.write(line)
+                with open(eval_rewards_file, 'a') as f:
+                    line = ','.join(map(str, [train_step, rewards.sum()] + list(rewards))) + '\n'
+                    f.write(line)
             if args.debug:
                 writer.add_scalar('success_rate', sr_mean, train_step)
             cum_reward = rewards.sum()
-            new_time = time.time()
-            elapsed_time = new_time - last_time
-            last_time = new_time
-            print(msg.format(elapsed_time, train_step, len(episode_returns), sr_mean, cum_reward, *rewards))
-
-        # store and log rewards
-        episode_returns.append(cum_reward)
-        agent_returns.append(agents_cum_reward)
+            print(msg.format(time_since(start_time), train_step, episode_count, sr_mean, cum_reward, *rewards))
 
         if args.evaluate:
             continue
 
         # save agent states
-        if (args.save_every != -1) and (len(episode_returns) % args.save_every == 0):
+        if (args.save_every != -1) and (episode_count % args.save_every == 0):
             save_agent_states(dirname, agents, save_models=args.use_agent_models)
 
         # save cumulatitive reward and agent rewards
-        with open(rewards_file, 'a') as f:
+        with open(train_rewards_file, 'a') as f:
             line = ','.join(map(str, [train_step, cum_reward] + agents_cum_reward)) + '\n'
             f.write(line)
 
@@ -325,7 +325,7 @@ def train(args):
             writer.add_scalar('reward', cum_reward, train_step)
             writer.add_scalars('agent_rewards', agent_rewards_dict, train_step)
 
-    print('Finished training with %d episodes' % len(episode_returns))
+    print('Finished training with %d episodes' % episode_count)
 
 
 def train_multiple_times(args, num_runs):
@@ -394,14 +394,14 @@ def run_config3(args, num):
         # 'simple_crypto',
         # 'simple_push',
         # 'simple_reference',
-        # 'simple_speaker_listener',
+        'simple_speaker_listener',
         'simple_spread',
         # 'simple_tag',
         # 'simple_world_comm',
         # 'simple_spread_comm'
     ]
-    obs_actions_model = [[False, True, False],[True, True, False], [False, False, True], [False, False, False]]
-    noises = [0.0, 0.1, 0.3, 0.6, 0.9]
+    obs_actions_model = [[False, False, True], [False, False, False]]
+    noises = [0.0, 0.05, 0.1, 0.2, 0.3]
     config = list(it.product(scenario_names, obs_actions_model, noises))[num]
     scenario_name, (local_obs, local_actions, use_models), noise = config
     print('running conf: (scenario: %s, local_obs: %r, local_actions: %r, use_models: %r, noise: %f)' % (scenario_name, local_obs, local_actions, use_models, noise))

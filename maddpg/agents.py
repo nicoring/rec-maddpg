@@ -12,7 +12,7 @@ class Agent:
     def act(self, obs, **kwargs):
         raise NotImplementedError
 
-    def experience(self, obs, action, reward, new_obs, done):
+    def experience(self, episode_count, obs, action, reward, new_obs, done):
         pass
 
     def update(self, agents):
@@ -137,7 +137,7 @@ class MaddpgAgent(Agent):
         actions = self.actor.select_action(obs, explore=explore).detach()
         return actions.to('cpu').numpy()
 
-    def experience(self, obs, action, reward, new_obs, done):
+    def experience(self, episode_count, obs, action, reward, new_obs, done):
         self.memory.add(obs, action, reward, new_obs, float(done))
 
     def train_actor(self, batch):
