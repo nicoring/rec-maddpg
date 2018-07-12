@@ -398,7 +398,7 @@ def run_config3(args, num):
         'simple_spread',
         # 'simple_tag',
         # 'simple_world_comm',
-        # 'simple_spread_comm'
+        'simple_spread_comm'
     ]
     obs_actions_model = [[False, False, True], [False, False, False]]
     noises = [0.0, 0.05, 0.1, 0.2, 0.3]

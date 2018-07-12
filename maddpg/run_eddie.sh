@@ -1,7 +1,7 @@
 #!/bin/sh
 #$ -N test
 #$ -cwd
-#$ -l h_rt=12:00:00
+#$ -l h_rt=24:00:00
 
 # Initialise the environment modules
 . /etc/profile.d/modules.sh
