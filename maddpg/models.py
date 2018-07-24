@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import RelaxedOneHotCategorical
-from lstms import LayerNormLSTM
 
 class Clonable:
     def clone(self, requires_grad=False):
