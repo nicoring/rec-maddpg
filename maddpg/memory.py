@@ -1,131 +1,115 @@
-import os
-from collections import namedtuple
-import random
-import pickle
+from collections import OrderedDict, namedtuple
 
-import numpy as np
 import torch
+import numpy as np
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-Transition = namedtuple('Transition', ('observation', 'action', 'reward', 'next_observation', 'done'))
 Batch = namedtuple('Batch', ('observations', 'actions', 'rewards', 'next_observations', 'dones'))
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class RingBuffer:
-    def __init__(self, capacity):
+    def __init__(self, capacity, max_epsiode_len, data_dim):
         self.capacity = capacity
-        self.storage = []
-        self.next_idx = 0
+        self.max_epsiode_len = max_epsiode_len
+        self.storage = np.zeros((capacity, max_epsiode_len, data_dim))
+        self.episode_lengths = np.zeros(capacity, dtype=np.int)
+        self.last_episode = 0
+        self.last_index = 0
 
-    def sample_index(self, batch_size, max_past=None):
+    def __len__(self):
+        if not self.full():
+            return self.last_episode + 1
+        else:
+            return self.capacity
+
+    def full(self):
+        return self.last_episode + 1 >= self.capacity
+
+    def store(self, episode_num, data):
+        current_index = episode_num % self.capacity
+        if episode_num > self.last_episode:
+            self.episode_lengths[current_index] = 0
+        timestep = self.episode_lengths[current_index]
+        self.storage[current_index, timestep, :] = data
+        self.episode_lengths[current_index] += 1
+        self.last_episode = episode_num
+        self.last_index = current_index
+
+    def sample_episode_index(self, batch_size, max_past=None):
         if max_past:
-            min_idx = self.next_idx - max_past
-            max_idx = self.next_idx
+            max_idx = self.last_index
+            min_idx = max_idx - max_past
             if not self.full():
                 min_idx = min_idx if min_idx >= 0 else 0
-            index = np.random.randint(min_idx, max_idx, size=batch_size)
+            index = np.random.randint(min_idx, max_idx + 1, size=batch_size)
             if self.full():
-                index = [i % self.capacity for i in index]
+                index = index % self.capacity
             return index
         else:
             min_idx = 0
             max_idx = len(self)
             return np.random.randint(min_idx, max_idx, size=batch_size)
 
-    def append(self, data):
-        if not self.full():
-            self.storage.append(data)
-        else:
-            self.storage[self.next_idx] = data
-        self.next_idx = (self.next_idx + 1) % self.capacity
+    def sample_transition_index(self, batch_size, max_past=None):
+        episode_nums = self.sample_episode_index(batch_size, max_past)
+        lengths = self.episode_lengths[episode_nums]
+        timesteps = np.random.randint(25, size=batch_size) % lengths
+        return episode_nums * self.max_epsiode_len + timesteps
 
-    def full(self):
-        return not self.next_idx >= len(self.storage)
+    def sample_episodes(self, index):
+        return self.storage[index, :, :], self.episode_lengths[index]
 
-    def __len__(self):
-        return len(self.storage)
-
-    def __getitem__(self, key):
-        return self.storage[key]
-
-    def __setitem__(self, key, value):
-        self.storage[key] = value
-
-    def __iter__(self):
-        return iter(self.storage)
-
-    def __repr__(self):
-        return self.storage.__repr__()
+    def sample_transitions(self, index):
+        return self.storage.reshape(self.capacity * self.max_epsiode_len, -1)[index, :]
 
 
-class ReplayBuffer:
-    def __init__(self, capacity):
+class ReplayMemory:
+    def __init__(self, capacity, max_epsiode_len, n_actions, n_obs):
         self.capacity = capacity
-        self.memory = RingBuffer(capacity)
+        self.buffers = OrderedDict()
+        self.buffers['observations'] = RingBuffer(capacity, max_epsiode_len, n_obs)
+        self.buffers['actions'] = RingBuffer(capacity, max_epsiode_len, n_actions)
+        self.buffers['rewards'] = RingBuffer(capacity, max_epsiode_len, 1)
+        self.buffers['next_observations'] = RingBuffer(capacity, max_epsiode_len, n_obs)
+        self.buffers['dones'] = RingBuffer(capacity, max_epsiode_len, 1)
 
     @staticmethod
-    def sample_from_memories(memories, batch_size, max_past=None):
-        """Collect experiences from all agents"""
-        assert len(set(m.memory.next_idx for m in memories)) == 1
-        index = memories[0].memory.sample_index(batch_size, max_past)
-        batches = [m.sample_batch(batch_size, index) for m in memories]
-        return Batch(*zip(*batches))
+    def sample_episodes_from(memories, batch_size, max_past=None):
+        """Samples episodes from all agents"""
+        assert len(set(b.last_episode for m in memories for b in m.buffers.values())) == 1
+        index = memories[0].buffers['actions'].sample_episode_index(batch_size, max_past)
+        batches, lengths = list(zip(*(m.create_episode_batch(index) for m in memories)))
+        return Batch(*(list(zipped) for zipped in zip(*batches))), lengths[0]
 
-    def add(self, *args):
+    @staticmethod
+    def sample_transitions_from(memories, batch_size, max_past=None):
+        """Samples transitions from all agents"""
+        assert len(set(b.last_episode for m in memories for b in m.buffers.values())) == 1
+        index = memories[0].buffers['actions'].sample_transition_index(batch_size, max_past)
+        batches = (m.create_transition_batch(index) for m in memories)
+        return Batch(*(list(zipped) for zipped in zip(*batches)))
+
+    def add(self, episode_num, obs, action, reward, next_obs, done):
         """Saves a transition"""
-        self.memory.append(Transition(*args))
+        for buffer, data in zip(self.buffers.values(), [obs, action, reward, next_obs, done]):
+            buffer.store(episode_num, data)
 
-    def sample_batch(self, batch_size, index=None):
-        if index is None:
-            transitions = random.sample(self.memory, batch_size)
-        else:
-            transitions = [self.memory[i] for i in index]
-        batch = Batch(*zip(*transitions))
-        observations = torch.tensor(batch.observations, dtype=torch.float).to(device)
-        actions = torch.tensor(batch.actions, dtype=torch.float).to(device)
-        rewards = torch.tensor(batch.rewards, dtype=torch.float).unsqueeze(1).to(device)
-        next_observations = torch.tensor(batch.next_observations, dtype=torch.float).to(device)
-        dones = torch.tensor(batch.dones).unsqueeze(1).to(device)
-        return Batch(observations, actions, rewards, next_observations, dones)
+    @staticmethod
+    def create_tensor(data, ensure_dim):
+        """Creates float tensor and moves it to the GPU if available"""
+        tensor = torch.from_numpy(data)
+        if len(tensor.size()) < ensure_dim:
+            tensor = tensor.unsqueeze(-1)
+        return tensor.float().to(DEVICE)
 
-    def __len__(self):
-        return len(self.memory)
+    def create_episode_batch(self, index):
+        """Creates minibatch of episodes, which are zero-padded to be equal length"""
+        data = [b.sample_episodes(index) for b in self.buffers.values()]
+        data, lengths = zip(*data)
+        data = [self.create_tensor(a, 3).transpose(0, 1) for a in data]
+        return Batch(*data), lengths[0]
 
-    def save(self, path):
-        filename = os.path.join(path, 'memory.pkl')
-        with open(filename, 'wb') as f:
-            pickle.dump(self.memory, f)
-
-    def load(self, path):
-        filename = os.path.join(path, 'memory.pkl')
-        with open(filename, 'rb') as f:
-            self.memory = pickle.load(f)
-
-if __name__ == '__main__':
-    print('run tests')
-    b = RingBuffer(10)
-    b.append(1)
-    b.append(2)
-    idx = b.sample_index(100)
-    assert all(i == 0 or i == 1 for i in idx)
-    idx = b.sample_index(100, max_past=5)
-    assert all(i == 0 or i == 1 for i in idx)
-    b.append(3)
-    b.append(4)
-    b.append(5)
-    b.append(6)
-    b.append(7)
-    b.append(8)
-    b.append(9)
-    b.append(10)
-    idx = b.sample_index(1000, max_past=5)
-    valid = [5, 6, 7, 8, 9]
-    assert all(i in valid for i in idx)
-    b.append(11)
-    b.append(12)
-    assert b.next_idx == 2, 'next_idx should be 2 is %d' % b.next_idx
-    idx = b.sample_index(1000, max_past=5)
-    valid = [7, 8, 9, 0, 1]
-    assert all(i in valid for i in idx)
-    print('all tests successful')
+    def create_transition_batch(self, index):
+        """Creates minibatch of transitions"""
+        data = [self.create_tensor(b.sample_transitions(index), 2) for b in self.buffers.values()]
+        return Batch(*data)

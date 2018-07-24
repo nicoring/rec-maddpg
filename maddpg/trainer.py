@@ -13,8 +13,8 @@ import gym
 from multiagent.environment import MultiAgentEnv
 import multiagent.scenarios as scenarios
 
-from agents import MaddpgAgent, RandomAgent, SpreadScriptedAgent
-from models import Actor, Critic
+from agents import MaddpgAgent, MARDPGAgent, RandomAgent, SpreadScriptedAgent
+from models import Actor, Critic, LSTMCritic
 
 
 def parse_args():
@@ -60,6 +60,9 @@ def parse_args():
     parser.add_argument('--obfuscation-noise', type=float)
     # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
     # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
+
+    ## Recurrent Critic
+    parser.add_argument('--recurrent', default=False, action='store_true')
 
     return parser.parse_args()
 
@@ -107,39 +110,34 @@ def create_agents(env, params):
         n_critic_inputs = n_obs + n_actions
         n_observations = env.observation_space[i].shape[0]
         actor = Actor(n_observations, action_splits[i], params.hidden)
-        critic = Critic(n_critic_inputs, params.hidden)
-        agent = MaddpgAgent(i, 'agent_%d' % i, env, actor, critic, params)
+        if params.recurrent:
+            critic = LSTMCritic(n_critic_inputs, params.hidden)
+            agent = MARDPGAgent(i, 'agent_%d' % i, env, actor, critic, params)
+        else:
+            critic = Critic(n_critic_inputs, params.hidden)
+            agent = MaddpgAgent(i, 'agent_%d' % i, env, actor, critic, params)
         agents.append(agent)
     return agents
 
 
-def save_agent_states(dirname, agents, save_memories=False, save_models=False):
-    states_and_memories = [agent.get_state() for agent in agents]
-    states, memories, models = zip(*states_and_memories)
+def save_agent_states(dirname, agents, save_models=False):
+    states, models = zip(*[agent.get_state() for agent in agents])
     states_filename = os.path.join(dirname, 'states.pth.tar')
     torch.save(states, states_filename)
-    if save_memories:
-        memories_filename = os.path.join(dirname, 'memories.pth.tar')
-        torch.save(memories, memories_filename)
     if save_models:
         models_filename = os.path.join(dirname, 'models.pth.tar')
         torch.save(models, models_filename)
 
 
-def load_agent_states(dirname, agents, load_memories=False, load_models=False):
+def load_agent_states(dirname, agents, load_models=False):
     states_filename = os.path.join(dirname, 'states.pth.tar')
     states = torch.load(states_filename)
-    if load_memories:
-        memories_filename = os.path.join(dirname, 'memories.pth.tar')
-        memories = torch.load(memories_filename)
     if load_models:
         models_filename = os.path.join(dirname, 'models.pth.tar')
         models = torch.load(models_filename)
     for i, agent in enumerate(agents):
         state = {}
         state['state_dicts'] = states[i]
-        if load_memories:
-            state['memory'] = memories[i]
         if load_models:
             state['models'] = models[i]
         agent.load_state(state)
@@ -169,12 +167,21 @@ def evaluate(env, agents, num_runs, args):
             dones_sum += 1
     return dones_sum / num_runs, np.mean(rewards_all, axis=0)
 
+
 def time_since(since):
     now = time.time()
     s = now - since
     m = math.floor(s / 60)
     s -= m * 60
     return '%dm %ds' % (m, s)
+
+
+def eval_msg(start_time, train_step, episode_count, agents, sr_mean, rewards):
+    msg = 'time: {}, step {}, episode {}: success rate: {:.3f}, return: {:.2f}, '
+    msg += ', '.join([a.name + ': {:.2f}' for a in agents])
+    cum_reward = rewards.sum()
+    print(msg.format(time_since(start_time), train_step, episode_count, sr_mean, cum_reward, *rewards))
+
 
 def train(args):
     def signal_handling(signum, frame):
@@ -289,25 +296,24 @@ def train(args):
                     if args.debug:
                         for name, loss_dict in losses.items():
                             writer.add_scalars(name, loss_dict, train_step)
+
+            if train_step % args.eval_every == 0 or args.evaluate:
+                sr_mean, rewards = evaluate(env, agents, 50, args)
+                if not args.evaluate:
+                    with open(success_rate_file, 'a') as f:
+                        line = '{},{}\n'.format(train_step, sr_mean)
+                        f.write(line)
+                    with open(eval_rewards_file, 'a') as f:
+                        line = ','.join(map(str, [train_step, rewards.sum()] + list(rewards))) + '\n'
+                        f.write(line)
+                if args.debug:
+                    writer.add_scalar('success_rate', sr_mean, train_step)
+                eval_msg(start_time, train_step, episode_count, agents, sr_mean, rewards)
+
         episode_count += 1
-
-        if train_step % args.eval_every == 0 or args.evaluate:
-            sr_mean, rewards = evaluate(env, agents, 50, args)
-            msg = 'time: {}, step {}, episode {}: success rate: {:.3f}, return: {:.2f}, '
-            msg += ', '.join([a.name + ': {:.2f}' for a in agents])
-            if not args.evaluate:
-                with open(success_rate_file, 'a') as f:
-                    line = '{},{}\n'.format(train_step, sr_mean)
-                    f.write(line)
-                with open(eval_rewards_file, 'a') as f:
-                    line = ','.join(map(str, [train_step, rewards.sum()] + list(rewards))) + '\n'
-                    f.write(line)
-            if args.debug:
-                writer.add_scalar('success_rate', sr_mean, train_step)
-            cum_reward = rewards.sum()
-            print(msg.format(time_since(start_time), train_step, episode_count, sr_mean, cum_reward, *rewards))
-
         if args.evaluate:
+            sr_mean, rewards = evaluate(env, agents, 50, args)
+            eval_msg(start_time, train_step, episode_count, agents, sr_mean, rewards)
             continue
 
         # save agent states
@@ -415,11 +421,32 @@ def run_config3(args, num):
     return args
 
 
+def run_config4(args, num):
+    scenario_names = [
+        'simple_spread',
+        'simple_spread_comm',
+        'simple_reference',
+        'simple_speaker_listener'
+    ]
+    use_models = [False, True]
+    recurrent = [False, True]
+    noises = [0.0, 0.1, 0.2, 0.3, 0.4]
+    config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
+    print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %f' %  config)
+    scenario, use_agent_models, recurrent, noise = config
+    args.scenario = scenario
+    args.use_agent_models = use_agent_models
+    args.recurrent = recurrent
+    if noise > 0.0:
+        args.obfuscation_noise = noise
+    args.exp_name = '{}_{}_{}_{:.1f}'.format(scenario, str(use_agent_models), str(recurrent), noise)
+    return args
+
 def main():
     args = parse_args()
 
     if args.conf is not None:
-        args = run_config3(args, args.conf-1)
+        args = run_config4(args, args.conf-1)
 
     if args.num_runs is not None:
         train_multiple_times(args, args.num_runs)

@@ -3,7 +3,7 @@ import itertools as it
 import numpy as np
 import torch
 
-from memory import ReplayBuffer
+from memory import ReplayMemory
 import distributions
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -86,7 +86,8 @@ class MaddpgAgent(Agent):
         self.critic_target = critic.clone().to(device)
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=params.lr_actor)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=params.lr_critic)
-        self.memory = ReplayBuffer(params.memory_size)
+        self.memory = ReplayMemory(params.memory_size, params.max_episode_len,
+                                   self.actor.n_outputs, self.actor.n_inputs)
         self.mse = torch.nn.MSELoss()
 
         # params
@@ -138,7 +139,7 @@ class MaddpgAgent(Agent):
         return actions.to('cpu').numpy()
 
     def experience(self, episode_count, obs, action, reward, new_obs, done):
-        self.memory.add(obs, action, reward, new_obs, float(done))
+        self.memory.add(episode_count, obs, action, reward, new_obs, float(done))
 
     def train_actor(self, batch):
         ### forward pass ###
@@ -225,7 +226,7 @@ class MaddpgAgent(Agent):
                 kls[-1].append(kl_div.mean())
         return zip(self.agent_models.keys(), kls)
 
-    def add_noise(self, batch):
+    def add_noise_(self, batch):
         for i in range(len(batch.actions)):
             if i == self.index:
                 continue
@@ -233,12 +234,11 @@ class MaddpgAgent(Agent):
             obs = batch.observations[i]
             actions = batch.actions[i]
             # create noise tensors, same shape and on same device
-            # TODO: adapt noise to the observations and action types
             obs_noise = torch.randn_like(obs) * self.sigma_noise
             actions_noise = torch.randn_like(actions) * self.sigma_noise
-            # add noise in-place
-            batch.observations[i].add_(obs_noise)
-            batch.actions[i].add_(actions_noise)
+            # add noise
+            batch.observations[i] = obs + obs_noise
+            batch.actions[i] = actions + actions_noise
 
     def update(self, agents):
         # collect transistion memories form all agents
@@ -248,11 +248,11 @@ class MaddpgAgent(Agent):
         if self.use_agent_models:
             model_losses = []
             for _ in range(self.modeling_train_steps):
-                batch = ReplayBuffer.sample_from_memories(memories,
-                                                          self.modeling_batch_size,
-                                                          max_past=self.max_past)
+                batch = self.memory.sample_transitions_from(memories,
+                                                            self.modeling_batch_size,
+                                                            max_past=self.max_past)
                 if self.obfuscate_others:
-                    self.add_noise(batch)
+                    self.add_noise_(batch)
                 model_losses.append(self.train_models(batch, agents).data)
             model_loss = np.mean(model_losses)
             model_kls = self.compare_models(agents, batch)
@@ -261,9 +261,9 @@ class MaddpgAgent(Agent):
             model_kls = None
 
         # sample minibatch
-        batch = ReplayBuffer.sample_from_memories(memories, self.batch_size)
+        batch = self.memory.sample_transitions_from(memories, self.batch_size)
         if self.obfuscate_others:
-            self.add_noise(batch)
+            self.add_noise_(batch)
         # train actor and critic network
         actor_loss = self.train_actor(batch)
         critic_loss = self.train_critic(batch, agents)
@@ -288,16 +288,125 @@ class MaddpgAgent(Agent):
             'critic': self.critic.state_dict(),
             'critic_target': self.critic_target.state_dict(),
             'critic_optim': self.critic_optim.state_dict(),
-        }, self.memory.memory, model_pair
+        }, model_pair
 
     def load_state(self, state):
         for key, value in state['state_dicts'].items():
             getattr(self, key).load_state_dict(value)
-        if 'memory' in state:
-            self.memory.memory = state['memory']
         if 'models' in state:
             models, optims = state['models']
             for i, m in models.items():
                 self.agent_models[i].load_state_dict(m)
             for i, o in optims.items():
                 self.model_optims[i].load_state_dict(o)
+
+
+class MARDPGAgent(MaddpgAgent):
+
+    def __init__(self, index, name, env, actor, critic, params):
+        super().__init__(index, name, env, actor, critic, params)
+        self.max_episode_len = params.max_episode_len
+
+    def mask(self, tensor, lengths):
+        # tensor: T x m x d
+        # lengths: m x 1 --> length of every element in the minibatch
+        transposed_tensor = tensor.transpose(0, 1)
+        for i, length in enumerate(lengths):
+            if length < self.max_episode_len:
+                transposed_tensor[i, length:, :] = 0.0
+        return tensor
+
+    def train_actor(self, batch, lengths):
+        ### forward pass ###
+        pred_actions = self.actor.select_action(batch.observations[self.index])
+        actions = list(batch.actions)
+        actions[self.index] = pred_actions
+        # TODO: recurrent
+        pred_q = self.critic(batch.observations, actions, detached_states=True)
+        pred_q = self.mask(pred_q, lengths)
+
+        ### backward pass ###
+        p_reg = torch.mean(self.actor.forward(batch.observations[self.index])**2)
+        loss = -pred_q.mean() + 1e-3 * p_reg
+        self.actor_optim.zero_grad()
+        loss.backward()
+        if self.clip_grads:
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
+        self.actor_optim.step()
+        return loss
+
+    def train_critic(self, batch, agents, lengths):
+        """Train critic with TD-target."""
+        ### forward pass ###
+        # (a_1', ..., a_n') = (mu'_1(o_1'), ..., mu'_n(o_n'))
+        if self.use_agent_models:
+            pred_next_actions = [m.select_action(batch.next_observations[idx]).detach()
+                                 for idx, m in self.agent_models.items()]
+            self_obs = batch.next_observations[self.index]
+            self_action = self.actor_target.select_action(self_obs).detach()
+            pred_next_actions.insert(self.index, self_action)
+        else:
+            pred_next_actions = [a.actor_target.select_action(o).detach()
+                                 for o, a in zip(batch.next_observations, agents)]
+
+        # TODO: recurrent
+        # out shape: timesteps x batch_size x 1
+        q_next = self.critic_target(batch.next_observations, pred_next_actions)
+        reward = batch.rewards[self.index]
+        done = batch.dones[self.index]
+
+        # if not done: y = r + gamma * Q(o_1, ..., o_n, a_1', ..., a_n')
+        # if done:     y = r
+        q_target = reward + (1.0 - done) * self.gamma * q_next
+
+        ### backward pass ###
+        # loss(params) = mse(y, Q(o_1, ..., o_n, a_1, ..., a_n))
+        q_obs = batch.observations
+        q_actions = batch.actions
+        # TODO: recurrent
+        q_pred = self.critic(q_obs, q_actions)
+        q_target = q_target.detach()
+        self.mask(q_pred, lengths)
+        self.mask(q_target, lengths)
+        loss = self.mse(q_pred, q_target)
+
+        self.critic_optim.zero_grad()
+        loss.backward()
+        if self.clip_grads:
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+        self.critic_optim.step()
+        return loss
+
+    def update(self, agents):
+        # collect transistion memories form all agents
+        memories = [a.memory for a in agents]
+
+        # train model networks
+        if self.use_agent_models:
+            model_losses = []
+            for _ in range(self.modeling_train_steps):
+                batch = self.memory.sample_transitions_from(memories,
+                                                            self.modeling_batch_size,
+                                                            max_past=self.max_past)
+                if self.obfuscate_others:
+                    self.add_noise_(batch)
+                model_losses.append(self.train_models(batch, agents).data)
+            model_loss = np.mean(model_losses)
+            model_kls = self.compare_models(agents, batch)
+        else:
+            model_loss = None
+            model_kls = None
+
+        # sample minibatch
+        batch, lengths = self.memory.sample_episodes_from(memories, self.batch_size)
+        if self.obfuscate_others:
+            self.add_noise_(batch)
+        # train actor and critic network
+        actor_loss = self.train_actor(batch, lengths)
+        critic_loss = self.train_critic(batch, agents, lengths)
+
+        # update target network params
+        self.update_params(self.actor_target, self.actor)
+        self.update_params(self.critic_target, self.critic)
+
+        return actor_loss, critic_loss, model_loss, model_kls
