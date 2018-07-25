@@ -210,6 +210,7 @@ def train(args):
     eval_rewards_file = os.path.join(dirname, 'eval_rewards.csv')
     success_rate_file = os.path.join(dirname, 'success_rate.csv')
     kl_divergence_file = os.path.join(dirname, 'kl_divergence.csv')
+    times_file = os.path.join(dirname, 'times.csv')
     for rewards_file in [train_rewards_file, eval_rewards_file]:
         if not os.path.isfile(rewards_file):
             with open(rewards_file, 'w') as f:
@@ -306,6 +307,8 @@ def train(args):
                     with open(eval_rewards_file, 'a') as f:
                         line = ','.join(map(str, [train_step, rewards.sum()] + list(rewards))) + '\n'
                         f.write(line)
+                    with open(times_file, 'a') as f:
+                        f.write(str(time.time()) + '\n')
                 if args.debug:
                     writer.add_scalar('success_rate', sr_mean, train_step)
                 eval_msg(start_time, train_step, episode_count, agents, sr_mean, rewards)
