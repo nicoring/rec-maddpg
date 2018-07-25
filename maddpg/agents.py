@@ -6,7 +6,7 @@ import torch
 from memory import ReplayMemory
 import distributions
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class Agent:
     def act(self, obs, **kwargs):
@@ -80,10 +80,10 @@ class MaddpgAgent(Agent):
         self.name = name
         self.env = env
 
-        self.actor = actor.to(device)
-        self.critic = critic.to(device)
-        self.actor_target = actor.clone().to(device)
-        self.critic_target = critic.clone().to(device)
+        self.actor = actor.to(DEVICE)
+        self.critic = critic.to(DEVICE)
+        self.actor_target = actor.clone().to(DEVICE)
+        self.critic_target = critic.clone().to(DEVICE)
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=params.lr_actor)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=params.lr_critic)
         self.memory = ReplayMemory(params.memory_size, params.max_episode_len,
@@ -121,7 +121,7 @@ class MaddpgAgent(Agent):
         for agent in agents:
             if agent is self:
                 continue
-            agent_model = agent.actor.clone(requires_grad=True).to(device)
+            agent_model = agent.actor.clone(requires_grad=True).to(DEVICE)
             self.agent_models[agent.index] = agent_model
             optim = torch.optim.Adam(agent_model.parameters(), lr=self.model_lr)
             self.model_optims[agent.index] = optim
@@ -134,7 +134,7 @@ class MaddpgAgent(Agent):
             target_param.data.copy_(updated_param)
 
     def act(self, obs, explore=True):
-        obs = torch.tensor(obs, dtype=torch.float, requires_grad=False).to(device)
+        obs = torch.tensor(obs, dtype=torch.float, requires_grad=False).to(DEVICE)
         actions = self.actor.select_action(obs, explore=explore).detach()
         return actions.to('cpu').numpy()
 

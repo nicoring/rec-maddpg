@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import RelaxedOneHotCategorical
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class Clonable:
     def clone(self, requires_grad=False):
         clone = copy.deepcopy(self)
@@ -22,7 +24,6 @@ class Actor(nn.Module, Clonable):
         self.lin_1 = nn.Linear(n_inputs, n_hidden)
         self.lin_2 = nn.Linear(n_hidden, n_hidden)
         self.lin_3 = nn.Linear(n_hidden, self.n_outputs)
-        self.temp = torch.tensor([1.0])
 
     def forward(self, x):
         x = F.relu(self.lin_1(x))
@@ -33,7 +34,7 @@ class Actor(nn.Module, Clonable):
     def prob_dists(self, obs, temperature=1.0):
         logits = self.forward(obs)
         split_logits = torch.split(logits, self.action_split, dim=-1)
-        temperature = torch.tensor([temperature])
+        temperature = torch.tensor(temperature).to(DEVICE)
         return [RelaxedOneHotCategorical(temperature, logits=l) for l in split_logits]
 
     def select_action(self, obs, explore=False, temp=1.0):
