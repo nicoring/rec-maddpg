@@ -21,7 +21,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     # Environment
     parser.add_argument('--scenario', type=str, default='simple', help='name of the scenario script')
-    parser.add_argument('--max-train-steps', type=int, default=500_000, help='maximum episode length')
+    parser.add_argument('--max-train-steps', type=int, default=1_000_000, help='maximum episode length')
     parser.add_argument('--max-episode-len', type=int, default=25, help='maximum episode length')
     parser.add_argument('--num-adversaries', type=int, default=0, help='number of adversaries')
     parser.add_argument('--render', default=False, action='store_true', help='display agent policies')
@@ -431,14 +431,16 @@ def run_config4(args, num):
         'simple_reference',
         'simple_speaker_listener'
     ]
-    use_models = [False, True]
-    recurrent = [False, True]
+    use_models = [True]
+    recurrent = [True]
     noises = [0.0, 0.1, 0.2, 0.3, 0.4]
-    config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
-    print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %f' %  config)
-    scenario, use_agent_models, recurrent, noise = config
+    exp_names = list(range(10))
+    config = list(it.product(scenario_names, use_models, recurrent, noises, exp_names))[num]
+    print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %f, num: %d' %  config)
+    scenario, use_agent_models, recurrent, noise, exp_name = config
     args.scenario = scenario
     args.use_agent_models = use_agent_models
+    args.exp_name = str(exp_name)
     args.recurrent = recurrent
     if noise > 0.0:
         args.obfuscation_noise = noise
