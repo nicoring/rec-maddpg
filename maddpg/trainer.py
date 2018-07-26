@@ -27,13 +27,11 @@ def parse_args():
     parser.add_argument('--render', default=False, action='store_true', help='display agent policies')
     parser.add_argument('--eval', dest='evaluate', default=False, action='store_true', help='run agent policy without noise and training')
     parser.add_argument('--train-every', type=int, default=100, help='simulation steps in between network updates')
-    parser.add_argument('--benchmark', default=False, action='store_true', help='')
     parser.add_argument('--hidden', type=int, default=64, help='number of hidden units in actor and critic')
     parser.add_argument('--batch-size', type=int, default=1024, help='size of minibatch that is sampled from replay buffer')
-    parser.add_argument('--memory-size', type=int, default=1_000_000, help='size of replay memory')
+    parser.add_argument('--memory-size', type=int, default=50_000, help='size of replay memory')
     parser.add_argument('--tau', type=float, default=0.01, help='update rate for exponential update of target network params')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor for training of critic')
-    parser.add_argument('--sigma', type=float, default=0.1, help='std deviation of Gaussian noise process for exploration')
     parser.add_argument('--save-dir', type=str, default='results')
     parser.add_argument('--exp-name', type=str, default='test', help='name of experiment')
     parser.add_argument('--exp-run-num', type=str, default='', help='run number of experiment gets appended to log dir')
@@ -57,20 +55,20 @@ def parse_args():
     parser.add_argument('--modeling-train-steps', type=int, default=20)
     parser.add_argument('--modeling-batch-size', type=int, default=64)
     parser.add_argument('--modeling-lr', type=float, default=1e-4)
-    parser.add_argument('--obfuscation-noise', type=float)
-    # parser.add_argument('--good-policy', type=str, default='maddpg', help='policy for good agents')
-    # parser.add_argument('--adv-policy', type=str, default='maddpg', help='policy of adversaries')
+    parser.add_argument('--sigma-noise', type=float)
+    parser.add_argument('--temp-noise', type=float)
 
-    ## Recurrent Critic
-    parser.add_argument('--recurrent', default=False, action='store_true')
+    ## Recurrent agents
+    parser.add_argument('--recurrent-critic', default=False, action='store_true')
+    parser.add_argument('--recurrent-agent', default=False, action='store_true')
+    parser.add_argument('--recurrent-agent-model', default=False, action='store_true')
 
     return parser.parse_args()
 
 
-def make_env(scenario_name, shaped=True, benchmark=False):
+def make_env(scenario_name, shaped=True):
     scenario = scenarios.load(scenario_name + '.py').Scenario()
     world = scenario.make_world()
-    info_callback = scenario.benchmark_data if benchmark else None
     if scenario.has_shaped_reward:
         reward_callback = scenario.shaped_reward if shaped else scenario.sparse_reward
     else:
@@ -79,7 +77,6 @@ def make_env(scenario_name, shaped=True, benchmark=False):
                         reset_callback=scenario.reset_world,
                         reward_callback=reward_callback,
                         observation_callback=scenario.observation,
-                        info_callback=info_callback,
                         done_callback=scenario.done)
     return env
 
@@ -110,7 +107,7 @@ def create_agents(env, params):
         n_critic_inputs = n_obs + n_actions
         n_observations = env.observation_space[i].shape[0]
         actor = Actor(n_observations, action_splits[i], params.hidden)
-        if params.recurrent:
+        if params.recurrent_critic:
             critic = LSTMCritic(n_critic_inputs, params.hidden)
             agent = MARDPGAgent(i, 'agent_%d' % i, env, actor, critic, params)
         else:
@@ -189,7 +186,7 @@ def train(args):
         terminated = True
     signal.signal(signal.SIGINT, signal_handling)
 
-    env = make_env(args.scenario, args.shaped, args.benchmark)
+    env = make_env(args.scenario, args.shaped)
     agents = create_agents(env, args)
     if args.use_agent_models:
         for agent in agents:
@@ -432,19 +429,24 @@ def run_config4(args, num):
         'simple_speaker_listener'
     ]
     use_models = [True]
-    recurrent = [True]
-    noises = [0.0, 0.1, 0.2, 0.3, 0.4]
-    exp_names = list(range(10))
-    config = list(it.product(scenario_names, use_models, recurrent, noises, exp_names))[num]
-    print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %f, num: %d' %  config)
-    scenario, use_agent_models, recurrent, noise, exp_name = config
+    recurrent = [True, False]
+    obs_noise_sigmas = [0.0, 0.05, 0.1, 0.15, 0.2]
+    action_noise_temps = [1.0, 1.5, 2.0, 2.5, 3.0]
+    noises = zip(obs_noise_sigmas, action_noise_temps)
+    config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
+    print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %r' % config)
+    scenario, use_agent_models, recurrent, (noise_sigma, noise_temp) = config
     args.scenario = scenario
     args.use_agent_models = use_agent_models
-    args.exp_name = str(exp_name)
-    args.recurrent = recurrent
-    if noise > 0.0:
-        args.obfuscation_noise = noise
-    args.exp_name = '{}_{}_{}_{:.1f}'.format(scenario, str(use_agent_models), str(recurrent), noise)
+    args.recurrent_critic = recurrent
+    args.sigma_noise = noise_sigma
+    args.temp_noise = noise_temp
+    if recurrent:
+        args.batch_size = 128
+    else:
+        args.batch_size = 1024
+    args.max_train_steps = 1_000_000
+    args.exp_name = '{}_{}_{}_{:.2f}_{:.2f}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
     return args
 
 def main():

@@ -16,14 +16,22 @@ class Clonable:
 
 
 class Actor(nn.Module, Clonable):
+    @classmethod
+    def from_actor(cls, actor):
+        return cls(actor.n_inputs, actor.action_split, actor.n_hidden)
+
     def __init__(self, n_inputs, action_split, n_hidden):
         super().__init__()
         self.action_split = tuple(action_split)
         self.n_inputs = n_inputs
+        self.n_hidden = n_hidden
         self.n_outputs = int(sum(action_split))
-        self.lin_1 = nn.Linear(n_inputs, n_hidden)
-        self.lin_2 = nn.Linear(n_hidden, n_hidden)
-        self.lin_3 = nn.Linear(n_hidden, self.n_outputs)
+        self.init_layers()
+
+    def init_layers(self):
+        self.lin_1 = nn.Linear(self.n_inputs, self.n_hidden)
+        self.lin_2 = nn.Linear(self.n_hidden, self.n_hidden)
+        self.lin_3 = nn.Linear(self.n_hidden, self.n_outputs)
 
     def forward(self, x):
         x = F.relu(self.lin_1(x))
@@ -44,6 +52,26 @@ class Actor(nn.Module, Clonable):
         else:
             actions = [d.probs for d in distributions]
         return torch.cat(actions, dim=-1)
+
+class LSTMActor(Actor):
+    def init_layers(self):
+        self.lin_input = nn.Linear(self.n_inputs, self.n_hidden)
+        self.lstm = nn.LSTM(self.n_hidden, self.n_hidden)
+        self.hidden2logits = nn.Linear(self.n_hidden, self.n_outputs)
+        self.h_0 = nn.Parameter(torch.randn(self.n_hidden))
+        self.c_0 = nn.Parameter(torch.randn(self.n_hidden))
+
+    def init_state(self, batch_size):
+        h_0 = self.h_0.repeat(1, batch_size, 1)
+        c_0 = self.c_0.repeat(1, batch_size, 1)
+        return (h_0, c_0)
+
+    def forward(self, x):
+        x = F.relu(self.lin_input(x))
+        state = self.init_state(x.shape[1])
+        x, _ = self.lstm(x, state)
+        logits = self.hidden2logits(x)
+        return logits
 
 
 class Critic(nn.Module, Clonable):

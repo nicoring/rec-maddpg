@@ -4,7 +4,9 @@ import numpy as np
 import torch
 
 from memory import ReplayMemory
+from models import Actor, LSTMActor
 import distributions
+from torch.distributions import RelaxedOneHotCategorical
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -95,7 +97,6 @@ class MaddpgAgent(Agent):
         self.tau = params.tau
         self.gamma = params.gamma
         self.clip_grads = True
-        self.sigma = params.sigma
 
         # flags
         # local obs/actions means only the obs/actions of this agent are available
@@ -112,16 +113,18 @@ class MaddpgAgent(Agent):
         self.max_past = params.max_past
         self.modeling_train_steps = params.modeling_train_steps
         self.modeling_batch_size = params.modeling_batch_size
+        self.model_class = Actor
 
         # action and observation noise
-        self.obfuscate_others = params.obfuscation_noise is not None
-        self.sigma_noise = params.obfuscation_noise
+        self.obfuscate_others = params.sigma_noise or params.temp_noise
+        self.sigma_noise = params.sigma_noise
+        self.temp_noise = params.temp_noise
 
     def init_agent_models(self, agents):
         for agent in agents:
             if agent is self:
                 continue
-            agent_model = agent.actor.clone(requires_grad=True).to(DEVICE)
+            agent_model = self.model_class.from_actor(agent.actor).to(DEVICE)
             self.agent_models[agent.index] = agent_model
             optim = torch.optim.Adam(agent_model.parameters(), lr=self.model_lr)
             self.model_optims[agent.index] = optim
@@ -207,7 +210,7 @@ class MaddpgAgent(Agent):
             self.model_optims[idx].zero_grad()
             losses = torch.zeros(len(distributions))
             for i, (actions, dist) in enumerate(zip(split_actions, distributions)):
-                loss = (-dist.log_prob(actions)).mean() # + self.entropy_weight * dist.entropy()
+                loss = (-dist.log_prob(actions)).mean() #+ self.entropy_weight * dist.entropy()
                 losses[i] = loss
             loss = torch.mean(losses)
             loss.backward()
@@ -234,11 +237,14 @@ class MaddpgAgent(Agent):
             obs = batch.observations[i]
             actions = batch.actions[i]
             # create noise tensors, same shape and on same device
-            obs_noise = torch.randn_like(obs) * self.sigma_noise
-            actions_noise = torch.randn_like(actions) * self.sigma_noise
+            if self.sigma_noise:
+                obs = obs + torch.randn_like(obs) * self.sigma_noise
+            if self.temp_noise:
+                temp = torch.tensor(self.temp_noise).to(DEVICE)
+                actions = RelaxedOneHotCategorical(temp, probs=actions).sample()
             # add noise
-            batch.observations[i] = obs + obs_noise
-            batch.actions[i] = actions + actions_noise
+            batch.observations[i] = obs
+            batch.actions[i] = actions
 
     def update(self, agents):
         # collect transistion memories form all agents
