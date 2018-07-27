@@ -128,10 +128,10 @@ def save_agent_states(dirname, agents, save_models=False):
 
 def load_agent_states(dirname, agents, load_models=False):
     states_filename = os.path.join(dirname, 'states.pth.tar')
-    states = torch.load(states_filename)
+    states = torch.load(states_filename, map_location='cpu')
     if load_models:
         models_filename = os.path.join(dirname, 'models.pth.tar')
-        models = torch.load(models_filename)
+        models = torch.load(models_filename, map_location='cpu')
     for i, agent in enumerate(agents):
         state = {}
         state['state_dicts'] = states[i]
