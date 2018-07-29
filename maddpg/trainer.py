@@ -180,6 +180,19 @@ def eval_msg(start_time, train_step, episode_count, agents, sr_mean, rewards):
     print(msg.format(time_since(start_time), train_step, episode_count, sr_mean, cum_reward, *rewards))
 
 
+def add_entropies(writer, obs, agents, train_step):
+    entropies = {}
+    for o, agent in zip(obs, agents):
+        device = next(agent.actor.parameters()).device
+        o = torch.tensor(o, dtype=torch.float, requires_grad=False, device=device)
+        ps = agent.actor.prob_dists(o)
+        agent_entropies = []
+        for p in ps:
+            agent_entropies.append(p.base_dist._categorical.entropy().detach().numpy())
+        entropies[agent.name] = np.mean(agent_entropies)
+    writer.add_scalars('policy_entropy', entropies, train_step)
+
+
 def train(args):
     def signal_handling(signum, frame):
         nonlocal terminated
@@ -191,6 +204,7 @@ def train(args):
     if args.use_agent_models:
         for agent in agents:
             agent.init_agent_models(agents)
+    
 
     # load state of agents if state file is given
     if args.resume:
@@ -245,6 +259,8 @@ def train(args):
 
             # act with all agents in environment and receive observation and rewards
             actions = [agent.act(o, explore=not args.evaluate) for o, agent in zip(obs, agents)]
+            if args.debug:
+                add_entropies(writer, obs, agents, train_step)
             new_obs, rewards, dones, _ = env.step(actions)
             done = all(dones)
             terminal = episode_step >= args.max_episode_len
@@ -436,6 +452,9 @@ def run_config4(args, num):
     config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
     print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %r' % config)
     scenario, use_agent_models, recurrent, (noise_sigma, noise_temp) = config
+    noise_sigma = 0.2
+    noise_temp = 1.5
+    recurrent = True
     args.scenario = scenario
     args.use_agent_models = use_agent_models
     args.recurrent_critic = recurrent
@@ -446,7 +465,7 @@ def run_config4(args, num):
     else:
         args.batch_size = 1024
     args.max_train_steps = 1_000_000
-    args.exp_name = '{}_{}_{}_{:.2f}_{:.2f}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
+    args.exp_name = 'comp_noise_{}_{}_{}_{:.2f}_{:.2f}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
     return args
 
 def main():

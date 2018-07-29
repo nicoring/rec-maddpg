@@ -48,7 +48,7 @@ class Actor(nn.Module, Clonable):
     def select_action(self, obs, explore=False, temp=1.0):
         distributions = self.prob_dists(obs, temp)
         if explore:
-            actions = [d.sample() for d in distributions]
+            actions = [d.rsample() for d in distributions]
         else:
             actions = [d.probs for d in distributions]
         return torch.cat(actions, dim=-1)
@@ -77,6 +77,7 @@ class LSTMActor(Actor):
 class Critic(nn.Module, Clonable):
     def __init__(self, n_inputs, n_hidden):
         super().__init__()
+        self.n_inputs = n_inputs
         self.lin_1 = nn.Linear(n_inputs, n_hidden)
         self.lin_2 = nn.Linear(n_hidden, n_hidden)
         self.lin_3 = nn.Linear(n_hidden, 1)
@@ -91,6 +92,7 @@ class Critic(nn.Module, Clonable):
 class LSTMCritic(nn.Module, Clonable):
     def __init__(self, n_inputs, n_hidden):
         super().__init__()
+        self.n_inputs = n_inputs
         self.lin = nn.Linear(n_inputs, n_hidden)
         self.lstm = nn.LSTM(n_hidden, n_hidden)
         self.hidden2value = nn.Linear(n_hidden, 1)
@@ -112,10 +114,11 @@ class LSTMCritic(nn.Module, Clonable):
         x = torch.cat(x_ts, dim=0)
         return x
 
-    def forward(self, observations, actions, detached_states=False):
+    def forward(self, observations, actions, state=None, detached_states=False):
         x = torch.cat([*observations, *actions], dim=-1)
         x = F.relu(self.lin(x))
-        state = self.init_state(x.shape[1])
+        if state is None:
+            state = self.init_state(x.shape[1])
         if detached_states:
             x = self.lstm_detached(x, state)
         else:

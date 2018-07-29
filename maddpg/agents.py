@@ -116,7 +116,7 @@ class MaddpgAgent(Agent):
         self.model_class = Actor
 
         # action and observation noise
-        self.obfuscate_others = params.sigma_noise or params.temp_noise
+        self.obfuscate_others = (params.sigma_noise is not None) or (params.temp_noise is not None)
         self.sigma_noise = params.sigma_noise
         self.temp_noise = params.temp_noise
 
@@ -210,9 +210,10 @@ class MaddpgAgent(Agent):
             self.model_optims[idx].zero_grad()
             losses = torch.zeros(len(distributions))
             for i, (actions, dist) in enumerate(zip(split_actions, distributions)):
-                loss = (-dist.log_prob(actions)).mean() #+ self.entropy_weight * dist.entropy()
+                entropy = dist.base_dist._categorical.entropy()
+                loss = (dist.log_prob(actions).mean() + self.entropy_weight * entropy).mean()
                 losses[i] = loss
-            loss = torch.mean(losses)
+            loss = -torch.mean(losses)
             loss.backward()
             self.model_optims[idx].step()
             return loss
@@ -237,10 +238,10 @@ class MaddpgAgent(Agent):
             obs = batch.observations[i]
             actions = batch.actions[i]
             # create noise tensors, same shape and on same device
-            if self.sigma_noise:
+            if self.sigma_noise is not None:
                 obs = obs + torch.randn_like(obs) * self.sigma_noise
-            if self.temp_noise:
-                temp = torch.tensor(self.temp_noise).to(DEVICE)
+            if self.temp_noise is not None:
+                temp = torch.tensor(self.temp_noise, dtype=torch.float, device=actions.device)
                 actions = RelaxedOneHotCategorical(temp, probs=actions).sample()
             # add noise
             batch.observations[i] = obs
@@ -316,11 +317,24 @@ class MARDPGAgent(MaddpgAgent):
     def mask(self, tensor, lengths):
         # tensor: T x m x d
         # lengths: m x 1 --> length of every element in the minibatch
-        transposed_tensor = tensor.transpose(0, 1)
+        binary_mask = torch.ones_like(tensor)
         for i, length in enumerate(lengths):
-            if length < self.max_episode_len:
-                transposed_tensor[i, length:, :] = 0.0
-        return tensor
+            if length < 25:
+                binary_mask[length:, i, :] = 0.0
+        return tensor * binary_mask
+
+    def add_noise_(self, batch, lengths=None):
+        super().add_noise_(batch)
+        if lengths is not None:
+            for i in range(len(batch.actions)):
+                if i == self.index:
+                    continue
+                if self.sigma_noise is not None:
+                    obs = batch.observations[i]
+                    batch.observations[i] = self.mask(obs, lengths)
+                if self.temp_noise is not None:
+                    actions = batch.actions[i]
+                    batch.actions[i] = self.mask(actions, lengths)
 
     def train_actor(self, batch, lengths):
         ### forward pass ###
@@ -406,7 +420,7 @@ class MARDPGAgent(MaddpgAgent):
         # sample minibatch
         batch, lengths = self.memory.sample_episodes_from(memories, self.batch_size)
         if self.obfuscate_others:
-            self.add_noise_(batch)
+            self.add_noise_(batch, lengths)
         # train actor and critic network
         actor_loss = self.train_actor(batch, lengths)
         critic_loss = self.train_critic(batch, agents, lengths)
