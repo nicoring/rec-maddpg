@@ -97,10 +97,11 @@ class ReplayMemory:
     @staticmethod
     def create_tensor(data, ensure_dim):
         """Creates float tensor and moves it to the GPU if available"""
-        tensor = torch.tensor(data)
+        tensor = torch.tensor(data, requires_grad=False,
+                              dtype=torch.float, device=DEVICE)
         if len(tensor.size()) < ensure_dim:
             tensor = tensor.unsqueeze(-1)
-        return tensor.float().to(DEVICE)
+        return tensor
 
     def create_episode_batch(self, index):
         """Creates minibatch of episodes, which are zero-padded to be of equal length"""

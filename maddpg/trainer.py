@@ -13,7 +13,7 @@ import gym
 from multiagent.environment import MultiAgentEnv
 import multiagent.scenarios as scenarios
 
-from agents import MaddpgAgent, MARDPGAgent, RandomAgent, SpreadScriptedAgent
+from agents import MADDPGAgent, MARDPGAgent, RandomAgent, SpreadScriptedAgent
 from models import Actor, Critic, LSTMCritic
 
 
@@ -112,7 +112,7 @@ def create_agents(env, params):
             agent = MARDPGAgent(i, 'agent_%d' % i, env, actor, critic, params)
         else:
             critic = Critic(n_critic_inputs, params.hidden)
-            agent = MaddpgAgent(i, 'agent_%d' % i, env, actor, critic, params)
+            agent = MADDPGAgent(i, 'agent_%d' % i, env, actor, critic, params)
         agents.append(agent)
     return agents
 
@@ -439,33 +439,30 @@ def run_config3(args, num):
 
 def run_config4(args, num):
     scenario_names = [
-        'simple_spread',
-        'simple_spread_comm',
-        'simple_reference',
+        # 'simple_spread',
+        # 'simple_spread_comm',
+        # 'simple_reference',
         'simple_speaker_listener'
     ]
     use_models = [True]
     recurrent = [True, False]
-    obs_noise_sigmas = [0.0, 0.05, 0.1, 0.15, 0.2]
-    action_noise_temps = [1.0, 1.5, 2.0, 2.5, 3.0]
+    obs_noise_sigmas = [0.0, 0.1, 0.2, 0.3, 0.4]
+    action_noise_temps = [1.0, 2.0, 3.0, 4.0, 5.0]
     noises = zip(obs_noise_sigmas, action_noise_temps)
     config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
     print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %r' % config)
     scenario, use_agent_models, recurrent, (noise_sigma, noise_temp) = config
-    noise_sigma = 0.2
-    noise_temp = 1.5
-    recurrent = True
     args.scenario = scenario
     args.use_agent_models = use_agent_models
     args.recurrent_critic = recurrent
     args.sigma_noise = noise_sigma
     args.temp_noise = noise_temp
     if recurrent:
-        args.batch_size = 128
+        args.batch_size = 256
     else:
         args.batch_size = 1024
-    args.max_train_steps = 1_000_000
-    args.exp_name = 'comp_noise_{}_{}_{}_{:.2f}_{:.2f}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
+    args.max_train_steps = 1_500_000
+    args.exp_name = '{}_{}_{}_{:.2f}_{:.2f}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
     return args
 
 def main():

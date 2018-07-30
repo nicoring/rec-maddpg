@@ -76,7 +76,7 @@ class RandomAgent(Agent):
         return logits / np.sum(logits)
 
 
-class MaddpgAgent(Agent):
+class MADDPGAgent(Agent):
     def __init__(self, index, name, env, actor, critic, params):
         self.index = index
         self.name = name
@@ -102,7 +102,7 @@ class MaddpgAgent(Agent):
         # local obs/actions means only the obs/actions of this agent are available
         # if obs and actions are local this is equivalent to DDPG
         self.local_obs = params.local_obs
-        self.local_actions = params.local_actions
+        self.local_actions = params.local_actions or params.local_obs
 
         # agent modeling
         self.use_agent_models = params.use_agent_models
@@ -152,6 +152,7 @@ class MaddpgAgent(Agent):
         q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
         q_actions = [actions[self.index]] if self.local_actions else actions
         pred_q = self.critic(q_obs, q_actions)
+
         ### backward pass ###
         p_reg = torch.mean(self.actor.forward(batch.observations[self.index])**2)
         loss = -pred_q.mean() + 1e-3 * p_reg
@@ -168,19 +169,18 @@ class MaddpgAgent(Agent):
         # (a_1', ..., a_n') = (mu'_1(o_1'), ..., mu'_n(o_n'))
         self_obs = batch.next_observations[self.index]
         self_action = self.actor_target.select_action(self_obs).detach()
-        if self.local_actions or self.local_obs:
-            q_next_actions = [self_action]
+        if self.local_actions:
+            pred_next_actions = [self_action]
+        elif self.use_agent_models:
+            pred_next_actions = [m.select_action(batch.next_observations[idx]).detach()
+                                for idx, m in self.agent_models.items()]
+            pred_next_actions.insert(self.index, self_action)
         else:
-            if self.use_agent_models:
-                q_next_actions = [m.select_action(batch.next_observations[idx]).detach()
-                                  for idx, m in self.agent_models.items()]
-                q_next_actions.insert(self.index, self_action)
-            else:
-                q_next_actions = [a.actor_target.select_action(o).detach()
-                                  for o, a in zip(batch.next_observations, agents)]
+            pred_next_actions = [a.actor_target.select_action(o).detach()
+                                for o, a in zip(batch.next_observations, agents)]
 
         q_next_obs = [batch.next_observations[self.index]] if self.local_obs else batch.next_observations
-        q_next = self.critic_target(q_next_obs, q_next_actions)
+        q_next = self.critic_target(q_next_obs, pred_next_actions)
         reward = batch.rewards[self.index]
         done = batch.dones[self.index]
 
@@ -191,7 +191,7 @@ class MaddpgAgent(Agent):
         ### backward pass ###
         # loss(params) = mse(y, Q(o_1, ..., o_n, a_1, ..., a_n))
         q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
-        q_actions = [batch.actions[self.index]] if (self.local_actions or self.local_obs) else batch.actions
+        q_actions = [batch.actions[self.index]] if self.local_actions else batch.actions
         loss = self.mse(self.critic(q_obs, q_actions), q_target.detach())
 
         self.critic_optim.zero_grad()
@@ -242,7 +242,9 @@ class MaddpgAgent(Agent):
                 obs = obs + torch.randn_like(obs) * self.sigma_noise
             if self.temp_noise is not None:
                 temp = torch.tensor(self.temp_noise, dtype=torch.float, device=actions.device)
-                actions = RelaxedOneHotCategorical(temp, probs=actions).sample()
+                # avoid zero probs which lead to nan samples
+                probs = actions + 1e-45
+                actions = RelaxedOneHotCategorical(temp, probs=probs).sample()
             # add noise
             batch.observations[i] = obs
             batch.actions[i] = actions
@@ -308,7 +310,7 @@ class MaddpgAgent(Agent):
                 self.model_optims[i].load_state_dict(o)
 
 
-class MARDPGAgent(MaddpgAgent):
+class MARDPGAgent(MADDPGAgent):
 
     def __init__(self, index, name, env, actor, critic, params):
         super().__init__(index, name, env, actor, critic, params)
@@ -319,7 +321,7 @@ class MARDPGAgent(MaddpgAgent):
         # lengths: m x 1 --> length of every element in the minibatch
         binary_mask = torch.ones_like(tensor)
         for i, length in enumerate(lengths):
-            if length < 25:
+            if length < self.max_episode_len:
                 binary_mask[length:, i, :] = 0.0
         return tensor * binary_mask
 
@@ -341,8 +343,10 @@ class MARDPGAgent(MaddpgAgent):
         pred_actions = self.actor.select_action(batch.observations[self.index])
         actions = list(batch.actions)
         actions[self.index] = pred_actions
-        # TODO: recurrent
-        pred_q = self.critic(batch.observations, actions, detached_states=True)
+
+        q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
+        q_actions = [actions[self.index]] if self.local_actions else actions
+        pred_q = self.critic(q_obs, q_actions, detached_states=True)
         pred_q = self.mask(pred_q, lengths)
 
         ### backward pass ###
@@ -359,19 +363,21 @@ class MARDPGAgent(MaddpgAgent):
         """Train critic with TD-target."""
         ### forward pass ###
         # (a_1', ..., a_n') = (mu'_1(o_1'), ..., mu'_n(o_n'))
-        if self.use_agent_models:
+        self_obs = batch.next_observations[self.index]
+        self_action = self.actor_target.select_action(self_obs).detach()
+        if self.local_actions:
+            pred_next_actions = [self_action]
+        elif self.use_agent_models:
             pred_next_actions = [m.select_action(batch.next_observations[idx]).detach()
                                  for idx, m in self.agent_models.items()]
-            self_obs = batch.next_observations[self.index]
-            self_action = self.actor_target.select_action(self_obs).detach()
             pred_next_actions.insert(self.index, self_action)
         else:
             pred_next_actions = [a.actor_target.select_action(o).detach()
                                  for o, a in zip(batch.next_observations, agents)]
 
-        # TODO: recurrent
+        q_next_obs = [batch.next_observations[self.index]] if self.local_obs else batch.next_observations
         # out shape: timesteps x batch_size x 1
-        q_next = self.critic_target(batch.next_observations, pred_next_actions)
+        q_next = self.critic_target(q_next_obs, pred_next_actions)
         reward = batch.rewards[self.index]
         done = batch.dones[self.index]
 
@@ -381,13 +387,12 @@ class MARDPGAgent(MaddpgAgent):
 
         ### backward pass ###
         # loss(params) = mse(y, Q(o_1, ..., o_n, a_1, ..., a_n))
-        q_obs = batch.observations
-        q_actions = batch.actions
-        # TODO: recurrent
+        q_obs = [batch.observations[self.index]] if self.local_obs else batch.observations
+        q_actions = [batch.actions[self.index]] if self.local_actions else batch.actions
         q_pred = self.critic(q_obs, q_actions)
         q_target = q_target.detach()
-        self.mask(q_pred, lengths)
-        self.mask(q_target, lengths)
+        q_pred = self.mask(q_pred, lengths)
+        q_target = self.mask(q_target, lengths)
         loss = self.mse(q_pred, q_target)
 
         self.critic_optim.zero_grad()
