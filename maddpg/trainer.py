@@ -188,7 +188,7 @@ def add_entropies(writer, obs, agents, train_step):
         ps = agent.actor.prob_dists(o)
         agent_entropies = []
         for p in ps:
-            agent_entropies.append(p.base_dist._categorical.entropy().detach().numpy())
+            agent_entropies.append(p.base_dist._categorical.entropy().detach().cpu().numpy())
         entropies[agent.name] = np.mean(agent_entropies)
     writer.add_scalars('policy_entropy', entropies, train_step)
 
