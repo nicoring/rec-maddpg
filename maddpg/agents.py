@@ -315,6 +315,7 @@ class MARDPGAgent(MADDPGAgent):
     def __init__(self, index, name, env, actor, critic, params):
         super().__init__(index, name, env, actor, critic, params)
         self.max_episode_len = params.max_episode_len
+        self.model_class = LSTMActor
 
     def mask(self, tensor, lengths):
         # tensor: T x m x d
@@ -359,6 +360,7 @@ class MARDPGAgent(MADDPGAgent):
         self.actor_optim.step()
         return loss
 
+
     def train_critic(self, batch, agents, lengths):
         """Train critic with TD-target."""
         ### forward pass ###
@@ -402,20 +404,40 @@ class MARDPGAgent(MADDPGAgent):
         self.critic_optim.step()
         return loss
 
+    def train_models(self, batch, agents, lengths):
+        for idx, model in self.agent_models.items():
+            obs = batch.observations[idx] + 1e-45
+            actions = batch.actions[idx] + 1e-45
+            distributions = model.prob_dists(obs)
+            split_actions = torch.split(actions, agents[idx].actor.action_split, dim=-1)
+            self.model_optims[idx].zero_grad()
+            losses = torch.zeros(len(distributions))
+            for i, (actions, dist) in enumerate(zip(split_actions, distributions)):
+                entropy = dist.base_dist._categorical.entropy().unsqueeze(-1)
+                log_probs = dist.log_prob(actions).unsqueeze(-1)
+                entropy = self.mask(entropy, lengths)
+                log_probs = self.mask(log_probs, lengths)
+                loss = torch.mean(log_probs + self.entropy_weight * entropy)
+                losses[i] = loss
+            loss = -torch.mean(losses)
+            loss.backward()
+            self.model_optims[idx].step()
+            return loss
+
     def update(self, agents):
-        # collect transistion memories form all agents
+        # collect transition memories form all agents
         memories = [a.memory for a in agents]
 
         # train model networks
         if self.use_agent_models:
             model_losses = []
             for _ in range(self.modeling_train_steps):
-                batch = self.memory.sample_transitions_from(memories,
-                                                            self.modeling_batch_size,
-                                                            max_past=self.max_past)
+                batch, lengths = self.memory.sample_episodes_from(memories,
+                                                                  self.modeling_batch_size,
+                                                                  max_past=self.max_past)
                 if self.obfuscate_others:
-                    self.add_noise_(batch)
-                model_losses.append(self.train_models(batch, agents).data)
+                    self.add_noise_(batch, lengths)
+                model_losses.append(self.train_models(batch, agents, lengths).data)
             model_loss = np.mean(model_losses)
             model_kls = self.compare_models(agents, batch)
         else:
