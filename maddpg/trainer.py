@@ -446,9 +446,15 @@ def run_config4(args, num):
     ]
     use_models = [True]
     recurrent = [True, False]
-    obs_noise_sigmas = [0.0, 0.1, 0.2, 0.3, 0.4]
-    action_noise_temps = [1.0, 2.0, 3.0, 4.0, 5.0]
-    noises = zip(obs_noise_sigmas, action_noise_temps)
+    no_noise = [(None, None)]
+    obs_noise_sigmas = [0.2, 0.4, 0.6, 0.8, 1.0]
+    action_noise_temps = [2.0, 5.0, 8.0, 11.0, 13.0]
+    noises_both = list(zip(obs_noise_sigmas, action_noise_temps))
+    noises_only_actions = [(None, an) for an in action_noise_temps]
+    noises_only_obs = [(on, None) for on in obs_noise_sigmas]
+
+    noises = noises_only_actions + noises_only_obs
+
     config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
     print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %r' % config)
     scenario, use_agent_models, recurrent, (noise_sigma, noise_temp) = config
@@ -462,7 +468,9 @@ def run_config4(args, num):
     else:
         args.batch_size = 1024
     args.max_train_steps = 1_500_000
-    args.exp_name = '{}_{}_{}_{:.2f}_{:.2f}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
+    noise_sigma = '{:.2f}'.format(noise_sigma) if noise_sigma is not None else str(noise_sigma)
+    noise_temp = '{:.2f}'.format(noise_temp) if noise_temp is not None else str(noise_temp)
+    args.exp_name = '{}_{}_{}_{}_{}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
     return args
 
 def main():
