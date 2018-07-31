@@ -31,4 +31,4 @@ export TMP=/disk/scratch/${STUDENT_ID}/
 
 source /home/${STUDENT_ID}/miniconda3/bin/activate thesis
  
-"$@"
+srun "$@"
