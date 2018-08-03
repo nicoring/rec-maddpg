@@ -66,12 +66,45 @@ class LSTMActor(Actor):
         c_0 = self.c_0.repeat(1, batch_size, 1)
         return (h_0, c_0)
 
-    def forward(self, x):
+    def forward(self, x, state=None, return_state=False):
         x = F.relu(self.lin_input(x))
-        state = self.init_state(x.shape[1])
-        x, _ = self.lstm(x, state)
+        if state is None:
+            batch_size = x.shape[1] if len(x.shape) > 1 else 1
+            state = self.init_state(batch_size)
+        x, state = self.lstm(x, state)
         logits = self.hidden2logits(x)
-        return logits
+        if return_state:
+            return logits, state
+        else:
+            return logits
+
+    def prob_dists(self, obs, temperature=1.0, state=None, return_state=False):
+        if return_state:
+            logits, new_state = self.forward(obs, state, return_state=True)
+        else:
+            logits = self.forward(obs, state)
+        split_logits = torch.split(logits, self.action_split, dim=-1)
+        temperature = torch.tensor(temperature).to(DEVICE)
+        dists = [RelaxedOneHotCategorical(temperature, logits=l) for l in split_logits]
+        if return_state:
+            return dists, new_state
+        else:
+            return dists
+
+    def select_action(self, obs, explore=False, temp=1.0, state=None, return_state=False):
+        if return_state:
+            distributions, new_state = self.prob_dists(obs, temp, state=state, return_state=True)
+        else:
+            distributions = self.prob_dists(obs, temp, state=state)
+        if explore:
+            actions = [d.rsample() for d in distributions]
+        else:
+            actions = [d.probs for d in distributions]
+        actions = torch.cat(actions, dim=-1)
+        if return_state:
+            return actions, new_state
+        else:
+            return actions
 
 
 class Critic(nn.Module, Clonable):

@@ -19,6 +19,9 @@ class Agent:
 
     def update(self, agents):
         pass
+    
+    def reset(self):
+        pass
 
 
 class SpreadScriptedAgent(Agent):
@@ -316,6 +319,15 @@ class MARDPGAgent(MADDPGAgent):
         super().__init__(index, name, env, actor, critic, params)
         self.max_episode_len = params.max_episode_len
         self.model_class = LSTMActor
+        self.actor_state = None
+
+    def reset(self):
+        self.actor_state = None
+
+    def act(self, obs, explore=True):
+        obs = torch.tensor(obs, dtype=torch.float, requires_grad=False).view(1,1,-1).to(DEVICE)
+        actions, self.actor_state = self.actor.select_action(obs, explore=explore, state=self.actor_state, return_state=True)
+        return actions.detach().to('cpu').numpy()[0][0]
 
     def mask(self, tensor, lengths):
         # tensor: T x m x d

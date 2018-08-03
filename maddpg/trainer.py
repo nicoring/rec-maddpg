@@ -14,7 +14,7 @@ from multiagent.environment import MultiAgentEnv
 import multiagent.scenarios as scenarios
 
 from agents import MADDPGAgent, MARDPGAgent, RandomAgent, SpreadScriptedAgent
-from models import Actor, Critic, LSTMCritic
+from models import Actor, Critic, LSTMCritic, LSTMActor
 
 
 def parse_args():
@@ -106,11 +106,13 @@ def create_agents(env, params):
             n_actions = sum(n_actions_each)
         n_critic_inputs = n_obs + n_actions
         n_observations = env.observation_space[i].shape[0]
-        actor = Actor(n_observations, action_splits[i], params.hidden)
+        
         if params.recurrent_critic:
             critic = LSTMCritic(n_critic_inputs, params.hidden)
+            actor = LSTMActor(n_observations, action_splits[i], params.hidden)
             agent = MARDPGAgent(i, 'agent_%d' % i, env, actor, critic, params)
         else:
+            actor = Actor(n_observations, action_splits[i], params.hidden)
             critic = Critic(n_critic_inputs, params.hidden)
             agent = MADDPGAgent(i, 'agent_%d' % i, env, actor, critic, params)
         agents.append(agent)
@@ -259,8 +261,8 @@ def train(args):
 
             # act with all agents in environment and receive observation and rewards
             actions = [agent.act(o, explore=not args.evaluate) for o, agent in zip(obs, agents)]
-            if args.debug:
-                add_entropies(writer, obs, agents, train_step)
+            # if args.debug:
+            #     add_entropies(writer, obs, agents, train_step)
             new_obs, rewards, dones, _ = env.step(actions)
             done = all(dones)
             terminal = episode_step >= args.max_episode_len
@@ -325,6 +327,9 @@ def train(args):
                 if args.debug:
                     writer.add_scalar('success_rate', sr_mean, train_step)
                 eval_msg(start_time, train_step, episode_count, agents, sr_mean, rewards)
+        
+        for agent in agents:
+            agent.reset()
 
         episode_count += 1
         if args.evaluate:
