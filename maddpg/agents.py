@@ -107,6 +107,7 @@ class MADDPGAgent(Agent):
         # agent modeling
         self.use_agent_models = params.use_agent_models
         self.agent_models = {}
+        self.agent_model_targets = {}
         self.model_optims = {}
         self.model_lr = params.modeling_lr
         self.entropy_weight = 1e-3
@@ -126,6 +127,7 @@ class MADDPGAgent(Agent):
                 continue
             agent_model = self.model_class.from_actor(agent.actor).to(DEVICE)
             self.agent_models[agent.index] = agent_model
+            self.agent_model_targets[agent.index] = agent_model.clone().to(DEVICE)
             optim = torch.optim.Adam(agent_model.parameters(), lr=self.model_lr)
             self.model_optims[agent.index] = optim
 
@@ -173,7 +175,7 @@ class MADDPGAgent(Agent):
             pred_next_actions = [self_action]
         elif self.use_agent_models:
             pred_next_actions = [m.select_action(batch.next_observations[idx]).detach()
-                                for idx, m in self.agent_models.items()]
+                                for idx, m in self.agent_model_targets.items()]
             pred_next_actions.insert(self.index, self_action)
         else:
             pred_next_actions = [a.actor_target.select_action(o).detach()
@@ -281,6 +283,13 @@ class MADDPGAgent(Agent):
         self.update_params(self.actor_target, self.actor)
         self.update_params(self.critic_target, self.critic)
 
+        for agent in agents:
+            if agent is self:
+                continue
+            model = self.agent_models[agent.index]
+            model_target = self.agent_model_targets[agent.index]
+            self.update_params(model_target, model)
+
         return actor_loss, critic_loss, model_loss, model_kls
 
     def get_state(self):
@@ -369,7 +378,7 @@ class MARDPGAgent(MADDPGAgent):
             pred_next_actions = [self_action]
         elif self.use_agent_models:
             pred_next_actions = [m.select_action(batch.next_observations[idx]).detach()
-                                 for idx, m in self.agent_models.items()]
+                                 for idx, m in self.agent_model_targets.items()]
             pred_next_actions.insert(self.index, self_action)
         else:
             pred_next_actions = [a.actor_target.select_action(o).detach()
@@ -433,5 +442,12 @@ class MARDPGAgent(MADDPGAgent):
         # update target network params
         self.update_params(self.actor_target, self.actor)
         self.update_params(self.critic_target, self.critic)
+
+        for agent in agents:
+            if agent is self:
+                continue
+            model = self.agent_models[agent.index]
+            model_target = self.agent_model_targets[agent.index]
+            self.update_params(model_target, model)
 
         return actor_loss, critic_loss, model_loss, model_kls
