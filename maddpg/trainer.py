@@ -47,6 +47,7 @@ def parse_args():
     parser.add_argument('--local-obs', default=False, action='store_true')
     parser.add_argument('--local-actions', default=False, action='store_true')
     parser.add_argument('--conf', type=int)
+    parser.add_argument('--conf-name', type=str)
     parser.add_argument('--sparse-reward', default=True, action='store_false', dest='shaped')
 
     ## Agent modeling
@@ -473,11 +474,79 @@ def run_config4(args, num):
     args.exp_name = '{}_{}_{}_{}_{}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
     return args
 
+
+def run_reference(args, num):
+    scenario_names = [
+        'simple_reference',
+    ]
+    use_models = [True]
+    recurrent = [True, False]
+    no_noise = [(None, None)]
+    obs_noise_sigmas = [0.03, 0.06, 0.1, 0.13, 0.16]
+    noises_only_obs = [(on, None) for on in obs_noise_sigmas]
+
+    noises = noises_only_obs
+
+    config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
+    print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %r' % config)
+    scenario, use_agent_models, recurrent, (noise_sigma, noise_temp) = config
+    args.scenario = scenario
+    args.use_agent_models = use_agent_models
+    args.recurrent_critic = recurrent
+    args.sigma_noise = noise_sigma
+    args.temp_noise = noise_temp
+    if recurrent:
+        args.batch_size = 256
+    else:
+        args.batch_size = 1024
+    args.max_train_steps = 1_500_000
+    noise_sigma = '{:.2f}'.format(noise_sigma) if noise_sigma is not None else str(noise_sigma)
+    noise_temp = '{:.2f}'.format(noise_temp) if noise_temp is not None else str(noise_temp)
+    args.exp_name = '{}_{}_{}_{}_{}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
+    return args
+
+
+def run_local_action_temp(args, num):
+    scenario_names = [
+        'simple_speaker_listener',
+    ]
+    use_models = [True]
+    recurrent = [True, False]
+    noises = [[-1.0, -1.0]]
+
+    config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
+    print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %r' % config)
+    scenario, use_agent_models, recurrent, (noise_sigma, noise_temp) = config
+    args.scenario = scenario
+    args.use_agent_models = use_agent_models
+    args.recurrent_critic = recurrent
+    args.sigma_noise = noise_sigma
+    args.temp_noise = noise_temp
+    args.local_actions = True
+    if recurrent:
+        args.batch_size = 256
+    else:
+        args.batch_size = 1024
+    args.max_train_steps = 1_500_000
+    noise_sigma = '{:.2f}'.format(noise_sigma) if noise_sigma is not None else str(noise_sigma)
+    noise_temp = '{:.2f}'.format(noise_temp) if noise_temp is not None else str(noise_temp)
+    args.exp_name = '{}_{}_{}_{}_{}'.format(scenario, str(use_agent_models), str(recurrent), noise_sigma, noise_temp)
+    return args
+
+
 def main():
     args = parse_args()
 
+    experiments = {
+        'reference': run_reference,
+        'local_action_temp': run_local_action_temp
+    }
+
     if args.conf is not None:
-        args = run_config4(args, args.conf-1)
+        if args.conf_name:
+            args = experiments[args.conf_name](args, args.conf-1)
+        else:
+            args = run_config4(args, args.conf-1)
 
     if args.num_runs is not None:
         train_multiple_times(args, args.num_runs)
