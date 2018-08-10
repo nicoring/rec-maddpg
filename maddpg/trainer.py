@@ -509,8 +509,10 @@ def run_reference(args, num):
 def run_local_action_temp(args, num):
     scenario_names = [
         'simple_speaker_listener',
+        'simple_reference',
+        'simple_spread_comm'
     ]
-    use_models = [True]
+    use_models = [False]
     recurrent = [True, False]
     noises = [[-1.0, -1.0]]
 
