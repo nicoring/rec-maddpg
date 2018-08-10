@@ -514,7 +514,7 @@ def run_local_action_temp(args, num):
     ]
     use_models = [False]
     recurrent = [True, False]
-    noises = [[-1.0, -1.0]]
+    noises = [[None, None]]
 
     config = list(it.product(scenario_names, use_models, recurrent, noises))[num]
     print('running conf: (scenario: %s, models: %r, recurrent: %r, noise: %r' % config)
